@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext as _no_context
 from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
@@ -39,6 +39,30 @@ def _str_hash(s: str) -> int:
 # a function declaration where a value belongs, so binding one is how a match
 # arm says "this name exists, and nothing can be proved about it".
 _UNTRANSLATABLE = z3.Function('#untranslatable', z3.IntSort(), z3.IntSort()) if Z3_AVAILABLE else None
+
+# A path condition the recorder cannot state: a loop body, a closure, a quoted
+# form. A call under one is not recorded at all.
+_NO_PATH = object()
+
+
+class CallSite:
+    """A call to a user function, as the main body translation met it.
+
+    `term` is the value the body's translation used for the call and `args` the
+    argument terms it was applied to; `path` is the condition under which the
+    call runs, built from the branches around it as they were translated.
+    `past_exit` says a statement before it in program order may have returned,
+    so it is only reached on the paths that took no early exit.
+    """
+    __slots__ = ('expr', 'fn_name', 'term', 'args', 'path', 'past_exit')
+
+    def __init__(self, expr, fn_name, term, args, path, past_exit):
+        self.expr = expr
+        self.fn_name = fn_name
+        self.term = term
+        self.args = args
+        self.path = path
+        self.past_exit = past_exit
 
 
 class Z3Translator:
@@ -110,6 +134,17 @@ class Z3Translator:
         self._unconditional_assignments: Set[int] = set()
         self._in_loop_body = False
         self._in_quoted_form = False
+        # The call sites and let bindings of the main body translation, with
+        # the path each is on (see recording_call_sites). None when nothing is
+        # recording.
+        self._call_sites: Optional[List[CallSite]] = None
+        self._binding_facts: Optional[List[z3.BoolRef]] = None
+        self._on_binding = None
+        self._path_conditions: List[Any] = []
+        self._past_exit = False
+        # How many contract quantifiers enclose what is being translated. A
+        # call under one has a bound variable among its arguments.
+        self._quantifier_depth = 0
         self._versions_frozen = False
         self._prefer_initial_versions = False
         self._prefer_final_versions = False
@@ -1199,9 +1234,37 @@ class Z3Translator:
             # For complex types, use Int as placeholder
             var = z3.Int(name)
 
+        self._add_enum_bounds(var, typ)
         self.variables[name] = var
         self._declared_types[name] = typ
         return var
+
+    def enum_size(self, typ: Optional[Type], depth: int = 0) -> Optional[int]:
+        """How many variants `typ` has if it is (or names) an enum, else None."""
+        if typ is None or depth > 16:
+            return None
+        if isinstance(typ, EnumType):
+            return len(typ.variants) or None
+        if isinstance(typ, PrimitiveType):
+            target = self.type_env.type_registry.get(typ.name)
+            if target is None:
+                target = self.imported_defs.types.get(typ.name)
+            if target is None or target is typ:
+                return None
+            return self.enum_size(target, depth + 1)
+        return None
+
+    def _add_enum_bounds(self, var: z3.ExprRef, typ: Optional[Type]) -> None:
+        """An enum value is one of its variants: 0 <= var < count.
+
+        A match over every variant takes its last arm whenever no earlier test
+        holds; without the bound, a value past the last variant was a
+        counterexample to any contract that relied on the match being
+        exhaustive.
+        """
+        size = self.enum_size(typ)
+        if size is not None and z3.is_expr(var) and var.sort() == z3.IntSort():
+            self.constraints.append(z3.And(var >= 0, var < size))
 
     def _apply_declared_bounds(self, name: str, var: z3.ExprRef) -> None:
         """Re-state a name's type bounds for a new version of it.
@@ -1224,6 +1287,8 @@ class Z3Translator:
             self._add_range_constraints(var, typ.bounds)
         elif isinstance(typ, PtrType):
             self.constraints.append(var >= 0)
+        else:
+            self._add_enum_bounds(var, typ)
 
     # What a cast to each sized integer can hold. U64 and I64 are left out:
     # their bounds are the model's own Int range, or beyond it.
@@ -1422,21 +1487,26 @@ class Z3Translator:
                         and is_form(expr[1][1], 'list-visited'):
                     return None
 
-                if op == 'forall':
-                    # Try collection-bound pattern first with Seq encoding
-                    if self.use_seq_encoding:
-                        coll_result = self._translate_forall_collection(expr)
-                        if coll_result is not None:
-                            return coll_result
-                    return self._translate_forall(expr)
-
-                if op == 'exists':
-                    # Try collection-bound pattern first with Seq encoding
-                    if self.use_seq_encoding:
-                        coll_result = self._translate_exists_collection(expr)
-                        if coll_result is not None:
-                            return coll_result
-                    return self._translate_exists(expr)
+                if op in ('forall', 'exists'):
+                    # A call in the body has the bound variable among its
+                    # arguments: nothing about it may be stated outside.
+                    self._quantifier_depth += 1
+                    try:
+                        if op == 'forall':
+                            # Try collection-bound pattern first with Seq encoding
+                            if self.use_seq_encoding:
+                                coll_result = self._translate_forall_collection(expr)
+                                if coll_result is not None:
+                                    return coll_result
+                            return self._translate_forall(expr)
+                        # Try collection-bound pattern first with Seq encoding
+                        if self.use_seq_encoding:
+                            coll_result = self._translate_exists_collection(expr)
+                            if coll_result is not None:
+                                return coll_result
+                        return self._translate_exists(expr)
+                    finally:
+                        self._quantifier_depth -= 1
 
                 # Implication
                 if op == 'implies':
@@ -1574,10 +1644,7 @@ class Z3Translator:
                     # where the assignments live - skipping them meant a `set!`
                     # or a `list-set` in a do block never versioned anything.
                     # _translate_let has always walked its body this way.
-                    result = None
-                    for item in expr.items[1:]:
-                        result = self.translate_expr(item)
-                    return result
+                    return self._translate_sequence(expr.items[1:])
 
                 # let binding - declare variables and translate body
                 if op == 'let' and len(expr) >= 3:
@@ -1890,16 +1957,20 @@ class Z3Translator:
                 return z3.Not(arg)
             return None
 
-        if op == 'and' and len(expr) >= 3:
-            args = [self._as_bool(self.translate_expr(e)) for e in expr.items[1:]]
+        if op in ('and', 'or') and len(expr) >= 3:
+            # Short-circuit: an operand is evaluated only when every one
+            # before it left the result open - true for `and`, false for `or` -
+            # so a call in it is recorded as running only there.
+            args: List[Optional[z3.BoolRef]] = []
+            for e in expr.items[1:]:
+                known = [a for a in args if a is not None]
+                path = None if len(known) != len(args) else (
+                    z3.BoolVal(True) if not known
+                    else z3.And(*known) if op == 'and' else z3.Not(z3.Or(*known)))
+                with self._on_path(path):
+                    args.append(self._as_bool(self.translate_expr(e)))
             if all(a is not None for a in args):
-                return z3.And(*args)
-            return None
-
-        if op == 'or' and len(expr) >= 3:
-            args = [self._as_bool(self.translate_expr(e)) for e in expr.items[1:]]
-            if all(a is not None for a in args):
-                return z3.Or(*args)
+                return z3.And(*args) if op == 'and' else z3.Or(*args)
             return None
 
         return None
@@ -1970,7 +2041,44 @@ class Z3Translator:
             # Recursively access remaining fields
             return self._translate_field_for_obj(intermediate, remaining)
 
-        return self.field_accessor(field_name)(obj)
+        access = self.field_accessor(field_name)(obj)
+        size = self.field_enum_size(field_name)
+        if size is not None and access.sort() == z3.IntSort():
+            # Stated about this read, once: the accessor is shared by every
+            # record declaring the field, and each of them declares it as this
+            # enum (field_enum_size).
+            seen = self.__dict__.setdefault('_enum_bounded_reads', set())
+            if access.get_id() not in seen:
+                seen.add(access.get_id())
+                self.constraints.append(z3.And(access >= 0, access < size))
+        return access
+
+    def field_enum_size(self, field_name: str) -> Optional[int]:
+        """The variant count of the enum every declared record gives `field_name`.
+
+        None unless at least one record declares the field and all of them
+        declare it as the same enum - accessors are named by field alone, so a
+        bound is only sound if it holds for every record that has the field.
+        """
+        cache = self.__dict__.setdefault('_field_enum_sizes', {})
+        if field_name in cache:
+            return cache[field_name]
+        sizes = set()
+        enums = set()
+        declared = False
+        for typ in list(self.type_env.type_registry.values()) + list(self.imported_defs.types.values()):
+            if isinstance(typ, RecordType) and field_name in typ.fields:
+                declared = True
+                field_type = typ.fields[field_name]
+                size = self.enum_size(field_type)
+                sizes.add(size)
+                if size is not None:
+                    enums.add(getattr(field_type, 'name', None))
+        result = None
+        if declared and len(sizes) == 1 and None not in sizes and len(enums) == 1:
+            result = next(iter(sizes))
+        cache[field_name] = result
+        return result
 
     def field_sort(self, field_name: str) -> Optional[z3.SortRef]:
         """The sort every declared record gives `field_name`, or None.
@@ -2058,18 +2166,23 @@ class Z3Translator:
             return None
 
         cond = self.translate_expr(expr[1])
-        then_expr = self.translate_expr(expr[2])
+        # Coerce non-boolean conditions to boolean (non-zero = true)
+        if cond is not None and not z3.is_bool(cond):
+            cond = cond != 0
+        # Each arm is translated on its own branch, so a call in it is recorded
+        # as running only there. An untranslatable test leaves both arms
+        # unrecorded, but they are still translated: their bindings are
+        # declared there.
+        with self._on_path(cond):
+            then_expr = self.translate_expr(expr[2])
 
         if cond is None or then_expr is None:
             return None
 
-        # Coerce non-boolean conditions to boolean (non-zero = true)
-        if not z3.is_bool(cond):
-            cond = cond != 0
-
         # else is optional, defaults to 0
         if len(expr) > 3:
-            else_expr = self.translate_expr(expr[3])
+            with self._on_path(z3.Not(cond)):
+                else_expr = self.translate_expr(expr[3])
             if else_expr is None:
                 return None
         else:
@@ -2085,35 +2198,58 @@ class Z3Translator:
         if len(expr) < 2:
             return None
 
-        result: Optional[z3.ExprRef] = None
+        clauses = [clause for clause in expr.items[1:]
+                   if isinstance(clause, SList) and len(clause) >= 2]
+        if not clauses:
+            return None
 
-        # Process clauses in reverse order to build nested If
-        for clause in reversed(expr.items[1:]):
-            if not isinstance(clause, SList) or len(clause) < 2:
-                continue
-
+        # Every test once, in order, before any body: the branch each body is
+        # translated on is built from the very terms the If chain tests, and a
+        # test translated twice could mint two different fresh constants.
+        tests: List[Optional[z3.BoolRef]] = []
+        for position, clause in enumerate(clauses):
             first = clause[0]
-
-            # Check for (else body) clause
             if isinstance(first, Symbol) and first.name == 'else':
-                result = self.translate_expr(clause[1])
-            else:
-                # Regular clause: (test body)
-                test = self.translate_expr(first)
-                body = self.translate_expr(clause[1])
-
-                if test is None or body is None:
+                # An else before the last clause hides every clause after it;
+                # nothing here would read them in the right order.
+                if position != len(clauses) - 1:
                     return None
+                tests.append(None)
+                continue
+            # Regular clause: (test body...)
+            test = self.translate_expr(first)
+            if test is None:
+                return None
+            # Coerce non-boolean test conditions to boolean (non-zero = true)
+            if not z3.is_bool(test):
+                test = test != 0
+            tests.append(test)
 
-                # Coerce non-boolean test conditions to boolean (non-zero = true)
-                if not z3.is_bool(test):
-                    test = test != 0
-
-                if result is None:
-                    # Last clause without else - use body as default
-                    result = body
-                else:
-                    result = z3.If(test, body, result)
+        result: Optional[z3.ExprRef] = None
+        # Process clauses in reverse order to build nested If
+        for position in reversed(range(len(clauses))):
+            clause = clauses[position]
+            test = tests[position]
+            earlier = tests[:position]
+            none_earlier = z3.Not(z3.Or(*earlier)) if earlier else z3.BoolVal(True)
+            # A clause runs when its test holds and no earlier one did; the
+            # else clause when none did.
+            path = none_earlier if test is None else z3.And(test, none_earlier)
+            # Every form of the clause runs, and the last is its value (#229).
+            # Translating only the first read `(c (set! x 1) 2)` as `(set! x 1)`.
+            with self._on_path(path):
+                body = self._translate_sequence(clause.items[1:])
+            # A clause that does not translate cannot be left out: the clause
+            # before it would become the default, and the If chain would claim
+            # that clause's value where this one's runs.
+            if body is None:
+                return None
+            if result is None:
+                # The last clause is the default: an else, or (a clause without
+                # one) the last test's body.
+                result = body
+            else:
+                result = z3.If(test, body, result)
 
         return result
 
@@ -2202,6 +2338,11 @@ class Z3Translator:
                     # verified (#118). Keyed by the binding node, so a phase
                     # re-translating the same tree gets the same constant.
                     fresh = shadowing
+                    # Whether the constant this binding gets is its own, rather
+                    # than one it shares with the binding it fails to shadow.
+                    own_constant = fresh or outer is None or outer is self._let_versions.get(key)
+                    records = (own_constant and self._recording()
+                               and not self._contains_return([init_value]))
                     if init_z3 is not None:
                         # Declare variable with same sort as initial value
                         if z3.is_bool(init_z3):
@@ -2216,6 +2357,13 @@ class Z3Translator:
                         self.variables[var_name] = var
                         # Add constraint that variable equals initial value
                         self.constraints.append(var == init_z3)
+                        # The same equality for Phase 12, which asserts it on
+                        # every path: it defines this binding's own constant,
+                        # so it says nothing where the binding does not exist.
+                        # Only when the constant is the binding's own, and the
+                        # initializer cannot leave the function first.
+                        if records:
+                            self._binding_facts.append(var == init_z3)
                     else:
                         # Can't translate init value - just declare as Int
                         self.variables[var_name] = (
@@ -2225,15 +2373,27 @@ class Z3Translator:
                     # over the same tree can tell that this variable is this
                     # binding's own.
                     self._let_versions[key] = self.variables[var_name]
+                    if records and self._on_binding is not None:
+                        # The hook reads the initializer's arguments, so it
+                        # sees the scope the initializer did: the name still
+                        # means the outer binding - `(let ((x (make-triple
+                        # arena s x o))) ...)` passes the outer x.
+                        inner = self.variables[var_name]
+                        if outer is None:
+                            del self.variables[var_name]
+                        else:
+                            self.variables[var_name] = outer
+                        try:
+                            self._on_binding(var_name, init_value, inner, self._binding_facts)
+                        finally:
+                            self.variables[var_name] = inner
 
         # Translate body expressions - value is the last one
         body_exprs = expr.items[2:]
         if not body_exprs:
             return None
 
-        result = None
-        for body_expr in body_exprs:
-            result = self.translate_expr(body_expr)
+        result = self._translate_sequence(body_exprs)
 
         # The names this scope covered up mean what they meant again - and only
         # that. An assignment or a loop inside the scope may have given the
@@ -2339,11 +2499,12 @@ class Z3Translator:
         so a phase re-deriving what it was initialised to has to attach that to
         the right one - `variables` holds whichever binding of the name is in
         scope where the phase happens to be looking (#118).
+
+        A binding the translation never reached has none, and gets None rather
+        than whatever else the name means: the parameter it shadows, say, which
+        a fact about the binding would then constrain.
         """
-        own = self._let_versions.get((id(binding), name))
-        if own is not None:
-            return own
-        return self.initial_variable(name)
+        return self._let_versions.get((id(binding), name))
 
     def _assigns_name(self, expr, name: str) -> bool:
         """Whether anything under `expr` assigns the `name` bound *here*.
@@ -3114,21 +3275,36 @@ class Z3Translator:
 
     def _translate_match_clauses(self, expr: SList, scrutinee: z3.ExprRef, tag_value: z3.ExprRef,
                                  bind_arm, end_arm) -> Optional[z3.ExprRef]:
-        """The arms of `_translate_match`, last to first, as a nested If."""
-        result: Optional[z3.ExprRef] = None
-        for clause in reversed(expr.items[2:]):
-            if not isinstance(clause, SList) or len(clause) < 2:
-                continue
+        """The arms of `_translate_match`, last to first, as a nested If.
 
+        None - the whole match untranslatable - for any arm this cannot read
+        exactly. Leaving one out is not neutral: the arm before it becomes the
+        If chain's default, and the chain then claims that arm's value where
+        the left-out one runs. That covers a literal pattern, `(0 ...)`, which
+        nothing here tests against, a wildcard before the last arm, and an arm
+        whose body does not translate.
+        """
+        clauses = [clause for clause in expr.items[2:]
+                   if isinstance(clause, SList) and len(clause) >= 2]
+        if not clauses:
+            return None
+
+        # (tag or None for the wildcard, binders) per arm, and each arm's test.
+        arms: List[Tuple[Optional[str], List[SExpr]]] = []
+        tests: List[Optional[z3.BoolRef]] = []
+        for position, clause in enumerate(clauses):
             pattern = self._unquote_pattern(clause[0])
-            body = clause[1]
-
             if isinstance(pattern, Symbol) and pattern.name == '_':
-                # Wildcard - default case
-                result = self.translate_expr(body)
-            elif isinstance(pattern, SList) and len(pattern) >= 1:
+                # Wildcard - default case. Anything after it never runs.
+                if position != len(clauses) - 1:
+                    return None
+                arms.append((None, []))
+                tests.append(None)
+                continue
+            tag: Optional[str] = None
+            binders: List[SExpr] = []
+            if isinstance(pattern, SList) and len(pattern) >= 1:
                 # Handle pattern like (tag var) or ((quote tag) var)
-                tag: Optional[str] = None
                 tag_elem = pattern[0]
                 if isinstance(tag_elem, Symbol):
                     tag = tag_elem.name.lstrip("'")
@@ -3136,55 +3312,90 @@ class Z3Translator:
                     # Handle quoted pattern: ((quote ok) _)
                     inner = tag_elem[1]
                     tag = inner.name if isinstance(inner, Symbol) else None
-
-                if tag:
-                    if not self.is_known_tag(tag):
-                        return None
-                    tag_idx = self.constructor_tag(tag)
-
-                    # Every named payload position, each to its own accessor,
-                    # at the sort its declaration gives it. A position whose sort
-                    # cannot be pinned is bound to a marker that translates to
-                    # nothing: leaving the name unbound would let it read an
-                    # outer binding of the same name instead.
-                    bindings: List[Tuple[str, Any]] = []
-                    for position, binder in enumerate(pattern.items[1:]):
-                        if isinstance(binder, Symbol) and binder.name != '_':
-                            sort = self.payload_sort(tag, position)
-                            if sort is None:
-                                bindings.append((binder.name, _UNTRANSLATABLE))
-                                continue
-                            accessor = self.union_payload_accessor(tag, position, sort)
-                            bindings.append((binder.name, accessor(scrutinee)))
-                    bind_arm(bindings)
-                    try:
-                        body_z3 = self.translate_expr(body)
-                    finally:
-                        end_arm(bindings)
-                    if body_z3 is None:
-                        return None
-
-                    if result is None:
-                        result = body_z3
-                    else:
-                        result = z3.If(tag_value == tag_idx, body_z3, result)
+                binders = list(pattern.items[1:])
             elif isinstance(pattern, Symbol):
                 # Simple tag pattern without variable binding
                 tag = pattern.name.lstrip("'")
-                if not self.is_known_tag(tag):
-                    return None
-                tag_idx = self.constructor_tag(tag)
+            if not tag or not self.is_known_tag(tag):
+                return None
+            arms.append((tag, binders))
+            tests.append(tag_value == self.constructor_tag(tag))
 
-                body_z3 = self.translate_expr(body)
-                if body_z3 is None:
-                    return None
+        # The If chain makes the last arm its default, taken whenever no
+        # earlier test holds. That is when it runs only if the arms name every
+        # variant of the scrutinee's type; otherwise it runs on its own test.
+        last_tag_is_default = (
+            tests[-1] is not None
+            and self._arms_cover_type([tag for tag, _ in arms if tag is not None],
+                                      self._is_enum_match(expr)))
 
-                if result is None:
-                    result = body_z3
-                else:
-                    result = z3.If(tag_value == tag_idx, body_z3, result)
+        result: Optional[z3.ExprRef] = None
+        for position in reversed(range(len(clauses))):
+            tag, binders = arms[position]
+            test = tests[position]
+            earlier = tests[:position]
+            none_earlier = z3.Not(z3.Or(*earlier)) if earlier else z3.BoolVal(True)
+            if test is None or (position == len(clauses) - 1 and last_tag_is_default):
+                path = none_earlier
+            else:
+                path = z3.And(test, none_earlier)
+
+            # Every named payload position, each to its own accessor,
+            # at the sort its declaration gives it. A position whose sort
+            # cannot be pinned is bound to a marker that translates to
+            # nothing: leaving the name unbound would let it read an
+            # outer binding of the same name instead.
+            bindings: List[Tuple[str, Any]] = []
+            if tag is not None:
+                for index, binder in enumerate(binders):
+                    if isinstance(binder, Symbol) and binder.name != '_':
+                        sort = self.payload_sort(tag, index)
+                        if sort is None:
+                            bindings.append((binder.name, _UNTRANSLATABLE))
+                            continue
+                        accessor = self.union_payload_accessor(tag, index, sort)
+                        bindings.append((binder.name, accessor(scrutinee)))
+            bind_arm(bindings)
+            try:
+                # Every form of the arm runs, and the last is its value (#229).
+                with self._on_path(path):
+                    body_z3 = self._translate_sequence(clauses[position].items[1:])
+            finally:
+                end_arm(bindings)
+            if body_z3 is None:
+                return None
+
+            if result is None:
+                result = body_z3
+            else:
+                result = z3.If(test, body_z3, result)
 
         return result
+
+    def _arms_cover_type(self, tags: List[str], is_enum: bool) -> bool:
+        """True if `tags` name every variant of the one type they can belong to.
+
+        Conservative: if the tags fit more than one declared type, every one of
+        those must be covered, and a type this cannot find covers nothing.
+        """
+        tagset = set(tags)
+        if not tagset:
+            return False
+        candidates: List[Set[str]] = []
+        for typ in list(self.type_env.type_registry.values()) + list(self.imported_defs.types.values()):
+            if is_enum and isinstance(typ, EnumType):
+                variants = set(typ.variants)
+            elif not is_enum and isinstance(typ, UnionType):
+                variants = set(typ.variants.keys())
+            else:
+                continue
+            if tagset <= variants:
+                candidates.append(variants)
+        if not is_enum:
+            for builtin in ({'some', 'none'}, {'ok', 'error'}):
+                if tagset <= builtin:
+                    candidates.append(builtin)
+        return bool(candidates) and all(variants == tagset for variants in candidates)
 
     def _is_enum_match(self, expr: SList) -> bool:
         """Check if a match expression is matching on an enum type (not a union).
@@ -3222,6 +3433,111 @@ class Z3Translator:
             else:
                 return False
         return has_enum_arm
+
+    @contextmanager
+    def recording_call_sites(self, on_binding=None):
+        """Record the user calls and let bindings the translation inside passes.
+
+        Phase 12 assumes a callee's contract at each of its call sites, under
+        the condition that the call runs (callee_contracts.py). That condition
+        comes from this translation - the branch tests as they were translated
+        here, payload binders as the arm bound them - rather than from a second
+        walk over the body afterwards, which has to rebuild every scope and gets
+        it wrong where it cannot (#169).
+
+        Yields (call_sites, binding_facts). The binding facts are
+        `local == initializer` for each let binding outside a loop body, as it
+        was translated where the binding is: the definition of the binding's own
+        constant, true wherever the binding exists. `on_binding(name,
+        initializer, constant, facts)` is called for each such binding too, in
+        its scope, to add what the verifier knows of builtins.
+        """
+        saved = (self._call_sites, self._binding_facts, self._path_conditions,
+                 self._past_exit, self._on_binding)
+        sites: List[CallSite] = []
+        facts: List[z3.BoolRef] = []
+        self._call_sites, self._binding_facts = sites, facts
+        self._path_conditions, self._past_exit = [], False
+        self._on_binding = on_binding
+        try:
+            yield sites, facts
+        finally:
+            (self._call_sites, self._binding_facts, self._path_conditions,
+             self._past_exit, self._on_binding) = saved
+
+    def _recording(self) -> bool:
+        """True where a call or binding met now is one the recorder keeps.
+
+        Not in a loop body, which runs any number of times over values this
+        model has one constant for; not in quoted data; not under a contract
+        quantifier, whose bound variable would escape it.
+        """
+        return (self._call_sites is not None and not self._in_loop_body
+                and not self._in_quoted_form and self._quantifier_depth == 0)
+
+    @contextmanager
+    def _on_path(self, condition):
+        """Translate what is inside on the branch where `condition` holds.
+
+        None means the branch's condition cannot be stated, and nothing under
+        it is recorded.
+        """
+        if self._call_sites is None:
+            yield
+            return
+        self._path_conditions.append(_NO_PATH if condition is None else condition)
+        try:
+            yield
+        finally:
+            self._path_conditions.pop()
+
+    def _current_path(self):
+        """The enclosing branch conditions, conjoined; None if one cannot be stated."""
+        if any(c is _NO_PATH for c in self._path_conditions):
+            return None
+        if not self._path_conditions:
+            return z3.BoolVal(True)
+        if len(self._path_conditions) == 1:
+            return self._path_conditions[0]
+        return z3.And(*self._path_conditions)
+
+    def _record_call(self, expr: SList, fn_name: str, term, args) -> None:
+        """Note a call to a user function with a contract, if this is a place to."""
+        if not self._recording() or term is None:
+            return
+        # A name bound in scope - a parameter or local of function type, a
+        # payload - is called here, not the module function of that name.
+        bound = self.variables.get(fn_name)
+        if bound is not None and not isinstance(bound, z3.FuncDeclRef):
+            return
+        if bound is None and self.type_env.lookup_var(fn_name) is not None:
+            return
+        from .callee_contracts import callee_has_contract
+        if not callee_has_contract(self, fn_name):
+            return
+        path = self._current_path()
+        if path is None:
+            return
+        self._call_sites.append(CallSite(expr, fn_name, term, list(args), path, self._past_exit))
+
+    def _translate_sequence(self, items):
+        """Translate statements in order; the value is the last one's.
+
+        A statement after one that may return runs only on the paths that did
+        not, which the recorder marks (`past_exit`). The mark belongs to this
+        sequence: a branch translated after it is not past these statements.
+        """
+        saved_exit = self._past_exit
+        result = None
+        try:
+            for item in items:
+                result = self.translate_expr(item)
+                if (self._call_sites is not None and not self._past_exit
+                        and self._contains_return([item])):
+                    self._past_exit = True
+        finally:
+            self._past_exit = saved_exit
+        return result
 
     @contextmanager
     def without_quantifier_patterns(self):
@@ -3336,12 +3652,9 @@ class Z3Translator:
                     # Fall through to uninterpreted function if inlining fails
 
         # Translate arguments
-        args = []
-        for arg in expr.items[1:]:
-            arg_z3 = self.translate_expr(arg)
-            if arg_z3 is None:
-                return None
-            args.append(arg_z3)
+        args = self._translate_call_args(expr, fn_name)
+        if args is None:
+            return None
 
         # Create uninterpreted function with unique key based on name and arity
         func_key = f"fn_{fn_name}_{len(args)}"
@@ -3404,9 +3717,101 @@ class Z3Translator:
                 self.constraints.append(result <= bounds.max_val)
 
         if record_def is not None and func.arity() == len(record_def.params):
-            self.constraints.extend(self._record_call_axioms(fn_name, record_def, func))
+            if self._quantifier_depth == 0:
+                self.constraints.extend(
+                    self._record_call_facts(fn_name, record_def, result, args))
+            else:
+                self.constraints.extend(self._record_call_axioms(fn_name, record_def, func))
 
+        self._record_call(expr, fn_name, result, args)
         return result
+
+    def _translate_call_args(self, expr: SList, fn_name: str) -> Optional[List[z3.ExprRef]]:
+        """The argument terms of a call, or None if one does not translate.
+
+        `when` reaches here as a call too. Its body runs only where its test
+        holds, and a closure's body whenever it is called - nowhere this can
+        place - so the recorder sees calls in either on the right path (see
+        recording_call_sites).
+        """
+        items = expr.items[1:]
+        args: List[z3.ExprRef] = []
+        if fn_name == 'when' and items:
+            test = self.translate_expr(items[0])
+            if test is None:
+                return None
+            args.append(test)
+            condition = test if z3.is_bool(test) else test != 0
+            saved_exit = self._past_exit
+            try:
+                with self._on_path(condition):
+                    for item in items[1:]:
+                        term = self.translate_expr(item)
+                        if term is None:
+                            return None
+                        args.append(term)
+                        if (self._call_sites is not None and not self._past_exit
+                                and self._contains_return([item])):
+                            self._past_exit = True
+            finally:
+                self._past_exit = saved_exit
+            return args
+        closure = fn_name in ('fn', 'lambda')
+        with self._on_path(None) if closure else _no_context():
+            for item in items:
+                term = self.translate_expr(item)
+                if term is None:
+                    return None
+                args.append(term)
+        return args
+
+    def _record_call_facts(self, fn_name: str, fn_def, call, args) -> List[z3.BoolRef]:
+        """What a record-building @pure function's body says about this call's fields.
+
+        `_record_call_axioms` states it for every call at once, as a quantifier.
+        Outside a contract's quantifier the arguments are ordinary terms, and
+        the facts are stated about this call alone: a quantified fact in the
+        context leaves a counterexample to model-based instantiation, which
+        rarely finds one in time - a false contract came back unknown rather
+        than failed (the HOWL report behind #169).
+        """
+        if len(args) != len(fn_def.params):
+            return []
+        allowed = set()
+        for arg in args:
+            allowed.update(c.get_id() for c in self._free_constants(arg))
+        facts: List[z3.BoolRef] = []
+        for item in fn_def.body.items[2:]:
+            if not (isinstance(item, SList) and len(item) == 2 and isinstance(item[0], Symbol)):
+                continue
+            start = len(self.constraints)
+            saved_sites = self._call_sites
+            # The callee's own body is not the caller's: a call in it is not
+            # one of the caller's call sites.
+            self._call_sites = None
+            try:
+                value = self._translate_with_substitution(item[1], dict(zip(fn_def.params, args)))
+            finally:
+                self._call_sites = saved_sites
+            added = self.constraints[start:]
+            del self.constraints[start:]
+            self.definedness_constraints.difference_update(
+                {i for i in self.definedness_constraints if i >= start})
+            if value is None or added:
+                continue
+            # A field whose value names anything but the arguments - a nested
+            # record-new's fresh constant, say - claims a value nothing else
+            # pins down, which `_record_call_axioms` leaves out as well.
+            if any(c.get_id() not in allowed for c in self._free_constants(value)):
+                continue
+            access = self.field_accessor(item[0].name)(call)
+            if access.sort() != value.sort():
+                if access.sort() == z3.RealSort() and z3.is_int(value):
+                    value = z3.ToReal(value)
+                else:
+                    continue
+            facts.append(access == value)
+        return facts
 
     def _record_call_axioms(self, fn_name: str, fn_def, func: z3.FuncDeclRef) -> List[z3.BoolRef]:
         """What a record-building @pure function's body says about each field.
