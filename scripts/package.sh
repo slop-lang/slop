@@ -50,7 +50,12 @@ cat > "dist/${DIST_NAME}/bin/slop" << 'WRAPPER'
 # SLOP Python CLI wrapper
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLOP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-export PYTHONPATH="$SLOP_ROOT/lib/python:$PYTHONPATH"
+# The CLI finds the native tools in $SLOP_HOME/bin and the standard library
+# in $SLOP_HOME/lib/std
+export SLOP_HOME="${SLOP_HOME:-$SLOP_ROOT}"
+# No empty entry when PYTHONPATH is unset: Python reads one as the current
+# directory, where a stray json.py would shadow the standard library's
+export PYTHONPATH="$SLOP_ROOT/lib/python${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -m slop.cli "$@"
 WRAPPER
 chmod +x "dist/${DIST_NAME}/bin/slop"

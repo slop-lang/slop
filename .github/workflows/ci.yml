@@ -40,3 +40,17 @@ jobs:
 
       - name: Run native test suite
         run: make test-native
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The release tarball, and an install of it, as release.yml builds them:
+      # `slop`, its native tools and stdlib, and `slop mcp` must all work from
+      # the package alone (smoke_dist.py unsets SLOP_HOME)
+      - name: Smoke-test the release package
+        run: |
+          ./scripts/package.sh ci tar.gz > /dev/null
+          python scripts/smoke_dist.py dist/slop-dev-ci/bin/slop examples/fibonacci.slop
+          PREFIX="$RUNNER_TEMP/slop-prefix" dist/slop-dev-ci/install.sh > /dev/null
+          python scripts/smoke_dist.py "$RUNNER_TEMP/slop-prefix/bin/slop" examples/fibonacci.slop

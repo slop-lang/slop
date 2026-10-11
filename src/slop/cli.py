@@ -1649,14 +1649,9 @@ def cmd_doc(args):
     input_path = args.input
     if not os.path.exists(input_path) and '/' not in input_path and '\\' not in input_path:
         # Looks like a module name, check stdlib
-        stdlib_modules = {p.stem: p for p in paths.list_stdlib_modules()}
-        if input_path in stdlib_modules:
-            input_path = str(stdlib_modules[input_path])
-        elif input_path.endswith('.slop'):
-            # Try without extension
-            base = input_path[:-5]
-            if base in stdlib_modules:
-                input_path = str(stdlib_modules[base])
+        module_path = paths.find_stdlib_module(input_path)
+        if module_path:
+            input_path = str(module_path)
 
     try:
         ast = parse_file(input_path)
@@ -2346,6 +2341,18 @@ def _has_imports(ast) -> bool:
 def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
     """Resolve module dependencies for type checking.
     Returns list of file paths in topological order."""
+    return resolve_check_files(input_path_str, include_paths)[0]
+
+
+def resolve_check_files(input_path_str: str, include_paths: list):
+    """Resolve module dependencies for type checking.
+
+    Returns (files, error): the file paths in topological order, and the
+    ResolverError that made resolution fall back to the input file alone
+    (an imported module that does not parse, a cycle), or None. The input
+    file's own read or parse failure is not returned: the native checker
+    reports that one.
+    """
     input_path = Path(input_path_str).resolve()
 
     try:
@@ -2353,10 +2360,10 @@ def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
             source = f.read()
         ast = parse(source)
     except Exception:
-        return [str(input_path)]
+        return [str(input_path)], None
 
     if not _has_imports(ast):
-        return [str(input_path)]
+        return [str(input_path)], None
 
     search_paths = [Path(p) for p in include_paths]
     search_paths.extend(paths.get_stdlib_include_paths())
@@ -2366,9 +2373,9 @@ def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
     try:
         graph = resolver.build_dependency_graph(input_path)
         order = resolver.topological_sort(graph)
-        return [_native_path(graph.modules[name].path) for name in order]
-    except Exception:
-        return [str(input_path)]
+        return [_native_path(graph.modules[name].path) for name in order], None
+    except Exception as e:
+        return [str(input_path)], e
 
 
 def _has_exports(ast) -> bool:
@@ -3382,8 +3389,9 @@ def cmd_ref(args):
     topic = args.topic or 'all'
 
     # Check if it's a stdlib module - generate docs dynamically
-    if topic in stdlib_modules:
-        module_path = stdlib_modules[topic]
+    module_path = (paths.find_stdlib_module(topic)
+                   if topic != 'all' and topic not in TOPICS else None)
+    if module_path:
         try:
             ast = parse_file(str(module_path))
             doc = extract_documentation(ast)
@@ -4798,6 +4806,12 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_mcp(args):
+    """Serve the ref, doc, check and format tools over MCP (stdio)."""
+    from slop.mcp_server import main as mcp_main
+    return mcp_main()
+
+
 def cmd_paths(args):
     """Show resolved SLOP paths for debugging."""
     resolved = paths.get_resolved_paths()
@@ -5028,6 +5042,10 @@ def main():
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show additional details (examples list)')
 
+    # mcp - tools for coding agents
+    subparsers.add_parser('mcp',
+        help='Run an MCP server on stdio with ref, doc, check and format tools for coding agents')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5048,6 +5066,7 @@ def main():
         'doc': cmd_doc,
         'test': cmd_test,
         'paths': cmd_paths,
+        'mcp': cmd_mcp,
     }
 
     return commands[args.command](args)

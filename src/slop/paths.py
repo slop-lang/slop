@@ -204,6 +204,26 @@ def list_stdlib_modules() -> List[Path]:
     return sorted(modules, key=lambda p: p.name)
 
 
+def find_stdlib_module(name: str) -> Optional[Path]:
+    """Find a standard library module file by name.
+
+    Accepts the module's file stem (strlib, mathlib), with or without .slop,
+    and the name of the stdlib directory that holds it (math -> mathlib),
+    since that is the name the import paths show.
+
+    Returns:
+        Path to the module file, or None if no stdlib module has that name.
+    """
+    if name.endswith('.slop'):
+        name = name[:-len('.slop')]
+    modules = list_stdlib_modules()
+    for module in modules:
+        if module.stem == name:
+            return module
+    by_dir = [m for m in modules if m.parent.name == name]
+    return by_dir[0] if len(by_dir) == 1 else None
+
+
 def get_stdlib_include_paths() -> List[Path]:
     """Get all standard library module directories as include paths.
 
