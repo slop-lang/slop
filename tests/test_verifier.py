@@ -13965,6 +13965,32 @@ _CALLEE_POST_LEAKS['length-post-with-a-pointer-to-an-alias-of-the-list-type'] = 
           (let ((a (g xs (cast (Ptr (List NonNegative)) (addr xs)))))
             (- (cast Int (list-len xs)) a)))))'''
 
+# A local copied out of a pointer is the same term as the pointee in the
+# model; the callee grows the pointee (Codex review round 7).
+_CALLEE_POST_LEAKS['argument-copied-out-of-a-pointer-the-callee-writes'] = '''(module m
+      (fn g ((xs (List Int)) (p (Ptr (List Int))))
+        (@spec (((List Int) (Ptr (List Int))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do (list-push (deref p) 1) (cast Int (list-len xs))))
+      (fn f ((p (Ptr (List Int))))
+        (@spec (((Ptr (List Int))) -> Int))
+        (@pre (== (list-len (deref p)) 0))
+        (@post (== $result 0))
+        (let ((xs (deref p)))
+          (let ((a (g xs p)))
+            (- (cast Int (list-len (deref p))) a)))))'''
+_CALLEE_POST_LEAKS['tail-call-with-an-argument-copied-out-of-a-pointer'] = '''(module m
+      (fn g ((xs (List Int)) (p (Ptr (List Int))))
+        (@spec (((List Int) (Ptr (List Int))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do (list-push (deref p) 1) (cast Int (list-len xs))))
+      (fn f ((p (Ptr (List Int))))
+        (@spec (((Ptr (List Int))) -> Int))
+        (@pre (== (list-len (deref p)) 0))
+        (@post (== $result (cast Int (list-len (deref p)))))
+        (let ((xs (deref p)))
+          (g xs p))))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))

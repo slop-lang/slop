@@ -351,13 +351,6 @@ def _payload_types(tr, scrutinee_type, tag: str):
     return None
 
 
-# Forms whose value is a function of their operands' values alone, read in a
-# call's argument.
-_ARGUMENT_OPERATORS = frozenset((
-    '+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>', '>=', 'and', 'or', 'not',
-))
-
-
 def _caller_shares_its_storage(body) -> bool:
     """True if `body` takes an address or builds a closure.
 
@@ -376,25 +369,87 @@ def _caller_shares_its_storage(body) -> bool:
     return any(_caller_shares_its_storage(item) for item in body.items)
 
 
+def _caller_bindings(body) -> dict:
+    """What each local of the caller is bound or assigned from, by name.
+
+    A let or let* binding's initializer, a `set!` of the bare name, a
+    for-each binder's collection and a match binder's scrutinee: whatever a
+    local can hold comes from one of them. Over-approximate - all bindings of
+    a name, wherever they are.
+    """
+    sources: dict = {}
+
+    def add(name, expr):
+        sources.setdefault(name, []).append(expr)
+
+    def walk(node):
+        if not isinstance(node, SList) or len(node) == 0:
+            return
+        head = node[0]
+        if isinstance(head, Symbol):
+            if head.name == 'quote':
+                return
+            if head.name in ('let', 'let*') and len(node) >= 2 and isinstance(node[1], SList):
+                for binding in node[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        first = binding[0]
+                        if isinstance(first, Symbol) and first.name == 'mut' and len(binding) >= 3:
+                            name = binding[1]
+                        elif isinstance(first, SList) and len(first) >= 2:
+                            name = first[1]
+                        else:
+                            name = first
+                        if isinstance(name, Symbol):
+                            add(name.name, binding[-1])
+            elif head.name == 'set!' and len(node) == 3 and isinstance(node[1], Symbol) \
+                    and '.' not in node[1].name:
+                add(node[1].name, node[2])
+            elif head.name == 'for-each' and len(node) >= 2 and isinstance(node[1], SList) \
+                    and len(node[1]) >= 2:
+                binder, source = node[1][0], node[1][-1]
+                for name in (binder.items if isinstance(binder, SList) else [binder]):
+                    if isinstance(name, Symbol):
+                        add(name.name, source)
+            elif head.name == 'match' and len(node) >= 3:
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 1 \
+                            and isinstance(clause[0], SList):
+                        for binder in clause[0].items[1:]:
+                            if isinstance(binder, Symbol):
+                                add(binder.name, node[1])
+        for item in node.items:
+            walk(item)
+
+    walk(body)
+    return sources
+
+
 def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
                        caller_param_types) -> Set[str]:
     """The parameters whose argument a stateful callee might change behind the call.
 
     A post naming a parameter describes the argument as the call passed it.
     The main model reads the caller's value after the call as the same term,
-    even where the callee wrote it through a pointer (#242), so such a post
-    would describe the changed value. An argument is safe when nothing the
-    callee holds can reach it: built from literals, names and operators, with
-    fields read only out of a parameter of the caller held by value, in a
-    caller that takes no address and builds no closure.
+    even where the callee wrote it through a pointer (#242) - and reads
+    `(deref p)` as `p` itself, so a local copied out of a pointer is the same
+    term as what the pointer reaches. Such a post would then describe the
+    changed value. An argument is stable when it and everything it was bound
+    from avoid pointers: literals, names, operators and calls over stable
+    operands, fields read only out of a parameter of the caller held by value -
+    never `deref`, and never in a caller that takes an address or builds a
+    closure.
     """
-    shares = _caller_shares_its_storage(caller_body)
+    if _caller_shares_its_storage(caller_body):
+        return set(params)
+    sources = _caller_bindings(caller_body)
 
     def by_value_record(name: str) -> Optional[RecordType]:
         typ = _resolve(tr, caller_param_types.get(name))
         return typ if isinstance(typ, RecordType) else None
 
     def field_chain_ok(root: str, fields: Sequence[str]) -> bool:
+        if root in sources:
+            return False        # a local's type is not known here
         record = by_value_record(root)
         for index, field_name in enumerate(fields):
             if record is None or field_name not in record.fields:
@@ -417,6 +472,19 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
             return inner[0], inner[1] + [node[2].name]
         return None
 
+    visiting: Set[str] = set()
+
+    def stable_name(name: str) -> bool:
+        if name not in sources:
+            return True         # a parameter, a constant, an enum value
+        if name in visiting:
+            return True         # stable unless something else says otherwise
+        visiting.add(name)
+        try:
+            return all(stable(expr) for expr in sources[name])
+        finally:
+            visiting.discard(name)
+
     def stable(node) -> bool:
         if isinstance(node, (Number, String)):
             return True
@@ -424,22 +492,26 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
             if node.name in ('true', 'false', 'nil') or node.name.startswith("'"):
                 return True
             root, fields = chain(node)
-            if shares:
-                return False
-            return not fields or field_chain_ok(root, fields)
-        if not isinstance(node, SList) or len(node) == 0 or not isinstance(node[0], Symbol):
+            if fields:
+                return field_chain_ok(root, fields)
+            return stable_name(root)
+        if not isinstance(node, SList) or len(node) == 0:
             return False
-        head = node[0].name
-        if head == 'quote':
+        head = node[0]
+        if not isinstance(head, Symbol):
+            return False
+        if head.name == 'quote':
             return True
-        if head == '.':
+        if head.name in ('deref', 'addr', 'fn', 'lambda'):
+            return False
+        if head.name == '.':
             found = chain(node)
-            return found is not None and not shares and field_chain_ok(*found)
-        if head == 'cast' and len(node) == 3:
+            return found is not None and field_chain_ok(*found)
+        if head.name == 'cast' and len(node) == 3:
             return stable(node[2])
-        if head in _ARGUMENT_OPERATORS:
-            return all(stable(item) for item in node.items[1:])
-        return False
+        # An operator, a constructor or a call: a value the caller holds,
+        # computed from these operands.
+        return all(stable(item) for item in node.items[1:])
 
     return {param for param, arg in zip(params, call_expr.items[1:]) if not stable(arg)}
 
