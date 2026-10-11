@@ -271,16 +271,19 @@ def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str
 
     diagnostics: List[Tuple[str, int, int, str, str]] = []
     hidden = 0
-    parse_failed = False
+    parse_failed = read_failed = False
     for (kind, value), file in zip(items, file_at):
         if kind == 'error':
-            parse_failed = True
             d = _DIAGNOSTIC_RE.match(value)
             if d:
+                parse_failed = True
                 diagnostics.append((file or d.group(1), int(d.group(2)), int(d.group(3)),
                                     d.group(4), d.group(5)))
             else:
-                diagnostics.append(('', 0, 0, 'error', value))
+                # `Error: Could not open file: f`, in the place of that file
+                read_failed = True
+                message = value[len('Error: '):] if value.startswith('Error: ') else value
+                diagnostics.append((file, 0, 0, 'error', message))
             continue
         entry = value[1]
         for d in (entry.get('diagnostics', []) if isinstance(entry, dict) else []):
@@ -309,16 +312,24 @@ def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str
     diagnostics.sort(key=lambda d: (order.get(d[0], len(order)), d[1], d[2]))
     lines = []
     for file, line, col, level, message in diagnostics:
-        where = f"{_shown(file, aliases)}:{line}:{col}: " if file else ""
+        if not file:
+            where = ""
+        elif line:
+            where = f"{_shown(file, aliases)}:{line}:{col}: "
+        else:
+            where = f"{_shown(file, aliases)}: "
         lines.append(f"{where}{level}: {message}")
     if not diagnostics:
         summary = "OK: no errors or warnings"
     else:
         summary = (f"{errors} error{'s' if errors != 1 else ''}, "
                    f"{warnings} warning{'s' if warnings != 1 else ''}")
-    if parse_failed:
-        summary += (". A file did not parse, so the type check is incomplete; "
-                    "fix the parse error and check again")
+    if parse_failed or read_failed:
+        failure = ("did not parse" if not read_failed else
+                   "could not be read" if not parse_failed else
+                   "did not parse or could not be read")
+        summary += (f". A file {failure}, so the type check is incomplete; "
+                    "fix that and check again")
     if hidden:
         summary += f" ({hidden} warning{'s' if hidden != 1 else ''} in standard library modules not shown)"
     lines.append(summary)

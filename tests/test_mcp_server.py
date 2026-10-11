@@ -404,6 +404,18 @@ class TestCheck:
         for line in text.splitlines()[:-1]:
             assert ("return value of 'g'" in line) == line.startswith("loose-helper.slop:")
 
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                        reason="POSIX permissions, and root reads anything")
+    def test_file_the_checker_cannot_open(self, project):
+        (project / "good.slop").chmod(0)
+        try:
+            text, is_error = call("check", path="good.slop")
+        finally:
+            (project / "good.slop").chmod(0o644)
+        assert not is_error
+        assert text.splitlines()[0].startswith("good.slop: error: Could not open file: ")
+        assert "A file could not be read" in text.splitlines()[-1]
+
     def test_source(self, project):
         text, is_error = call("check", source=BAD)
         assert not is_error
