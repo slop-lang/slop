@@ -142,6 +142,9 @@ class Z3Translator:
         self._on_binding = None
         self._path_conditions: List[Any] = []
         self._past_exit = False
+        # Inside a closure body, which runs whenever it is called - any number
+        # of times, nowhere this can place.
+        self._closure_depth = 0
         # How many contract quantifiers enclose what is being translated. A
         # call under one has a bound variable among its arguments.
         self._quantifier_depth = 0
@@ -2216,8 +2219,10 @@ class Z3Translator:
                     return None
                 tests.append(None)
                 continue
-            # Regular clause: (test body...)
-            test = self.translate_expr(first)
+            # Regular clause: (test body...). A test is evaluated only when
+            # every earlier one failed.
+            with self._on_path(z3.Not(z3.Or(*tests)) if tests else z3.BoolVal(True)):
+                test = self.translate_expr(first)
             if test is None:
                 return None
             # Coerce non-boolean test conditions to boolean (non-zero = true)
@@ -3468,12 +3473,13 @@ class Z3Translator:
     def _recording(self) -> bool:
         """True where a call or binding met now is one the recorder keeps.
 
-        Not in a loop body, which runs any number of times over values this
-        model has one constant for; not in quoted data; not under a contract
-        quantifier, whose bound variable would escape it.
+        Not in a loop body or a closure, which run any number of times over
+        values this model has one constant for; not in quoted data; not under
+        a contract quantifier, whose bound variable would escape it.
         """
         return (self._call_sites is not None and not self._in_loop_body
-                and not self._in_quoted_form and self._quantifier_depth == 0)
+                and not self._in_quoted_form and self._quantifier_depth == 0
+                and self._closure_depth == 0)
 
     @contextmanager
     def _on_path(self, condition):
@@ -3757,12 +3763,17 @@ class Z3Translator:
                 self._past_exit = saved_exit
             return args
         closure = fn_name in ('fn', 'lambda')
-        with self._on_path(None) if closure else _no_context():
+        if closure:
+            self._closure_depth += 1
+        try:
             for item in items:
                 term = self.translate_expr(item)
                 if term is None:
                     return None
                 args.append(term)
+        finally:
+            if closure:
+                self._closure_depth -= 1
         return args
 
     def _record_call_facts(self, fn_name: str, fn_def, call, args) -> List[z3.BoolRef]:
