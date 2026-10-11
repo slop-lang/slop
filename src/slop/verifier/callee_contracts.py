@@ -409,32 +409,36 @@ def _pointee_types(tr, types):
     return pointees
 
 
-def _holds_list(tr, typ, element_key: str, seen=frozenset()) -> bool:
-    """True if a value of `typ` holds, by value, a List header of that element type."""
+def _holds_list(tr, typ, seen=frozenset()) -> bool:
+    """True if a value of `typ` holds, by value, a List header.
+
+    Of any element type: an alias, a range or a generic can make two element
+    types written differently the same one.
+    """
     typ = _resolve(tr, typ)
     if typ is None:
         return True
     if id(typ) in seen:
         return False
     seen = seen | {id(typ)}
-    if isinstance(typ, ListType) and str(typ.element_type) == element_key:
+    if isinstance(typ, ListType):
         return True
     if isinstance(typ, PtrType):
         return False    # behind a pointer, not by value
     parts = _parts(tr, typ)
     if parts is None:
         return True
-    return any(_holds_list(tr, part, element_key, seen) for part in parts)
+    return any(_holds_list(tr, part, seen) for part in parts)
 
 
 def _list_length_is_the_callers(tr, param_types, list_type) -> bool:
-    """True if the callee cannot change the caller's length of a List of `list_type`.
+    """True if the callee cannot change the caller's length of a List it was passed.
 
     A List is a header held by value: the callee's copy of one has its own
     length. The caller's changes only through a pointer to where the caller
     keeps that header - `(g xs (addr xs))` pushes to the caller's xs while a
     post reads the callee's copy. So no pointer reachable from the
-    parameters may lead to a value holding a header of this element type.
+    parameters may lead to a value holding a List header.
     """
     list_type = _resolve(tr, list_type)
     if not isinstance(list_type, ListType):
@@ -442,8 +446,7 @@ def _list_length_is_the_callers(tr, param_types, list_type) -> bool:
     pointees = _pointee_types(tr, param_types)
     if pointees is None:
         return False
-    key = str(list_type.element_type)
-    return not any(_holds_list(tr, target, key) for target in pointees)
+    return not any(_holds_list(tr, target) for target in pointees)
 
 
 def contract_is_state_free(tr, fn_name: str, expr) -> bool:
