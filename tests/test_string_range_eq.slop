@@ -10,6 +10,7 @@
 
   (type P (record (name (String 1 .. 50)) (n Int)))
   (type Tagged (union (named (String 1 .. 50)) (anon Int)))
+  (type MaybeNamed (record (name (Option (String 1 .. 50))) (n Int)))
 
   (fn check-record-eq ()
     (@intent "Field-wise == on a record with a ranged String field")
@@ -30,6 +31,18 @@
       (when (not (== (Tagged (named "c")) (Tagged (named "c"))))
         (set! fails (+ fails 1)))
       (when (== (Tagged (named "c")) (Tagged (named "d")))
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-option-field-eq ()
+    (@intent "== through an Option field holding a ranged String")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (not (== (MaybeNamed (some "x") 1) (MaybeNamed (some "x") 1)))
+        (set! fails (+ fails 1)))
+      (when (== (MaybeNamed (some "x") 1) (MaybeNamed (some "y") 1))
+        (set! fails (+ fails 1)))
+      (when (== (MaybeNamed (some "x") 1) (MaybeNamed (none) 1))
         (set! fails (+ fails 1)))
       fails))
 
@@ -54,5 +67,6 @@
     (let ((mut fails 0))
       (set! fails (+ fails (check-record-eq)))
       (set! fails (+ fails (check-union-eq)))
+      (set! fails (+ fails (check-option-field-eq)))
       (set! fails (+ fails (check-set-key)))
       fails)))

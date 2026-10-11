@@ -3365,8 +3365,11 @@
     (let ((slop-type (resolve-payload-slop-type ctx raw-slop-type))
           (c-payload-type (resolved-payload-c-type ctx raw-slop-type slop-type raw-c-type)))
       (cond
-        ;; A ranged (String lo .. hi) is a slop_string too (#303)
-        ((or (string-eq slop-type "String") (string-eq c-payload-type "slop_string"))
+        ;; A ranged (String lo .. hi) is a slop_string too; under an Option its
+        ;; C type arrives still spelled as the SLOP type (#303)
+        ((or (string-eq slop-type "String")
+             (starts-with slop-type "(String ")
+             (string-eq c-payload-type "slop_string"))
           (ctx-str3 ctx "slop_hash_string(&" access ")"))
         ((or (string-eq slop-type "Int") (string-eq slop-type "I64") (string-eq slop-type "Symbol"))
           (ctx-str3 ctx "slop_hash_int(&" access ")"))
@@ -3412,8 +3415,11 @@
     (let ((slop-type (resolve-payload-slop-type ctx raw-slop-type))
           (c-payload-type (resolved-payload-c-type ctx raw-slop-type slop-type raw-c-type)))
       (cond
-        ;; A ranged (String lo .. hi) is a slop_string too (#303)
-        ((or (string-eq slop-type "String") (string-eq c-payload-type "slop_string"))
+        ;; A ranged (String lo .. hi) is a slop_string too; under an Option its
+        ;; C type arrives still spelled as the SLOP type (#303)
+        ((or (string-eq slop-type "String")
+             (starts-with slop-type "(String ")
+             (string-eq c-payload-type "slop_string"))
           (ctx-str5 ctx "slop_eq_string(&" a-access ", &" b-access ")"))
         ((or (string-eq slop-type "Int")
              (string-eq slop-type "I64")
