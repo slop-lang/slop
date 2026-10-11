@@ -1,0 +1,58 @@
+(module test-string-range-eq
+  (@intent "== and Set keys on aggregates holding a ranged (String lo .. hi)")
+
+  ;; A (String lo .. hi) field or payload is a slop_string, but the structural
+  ;; eq/hash helpers fell through to the named-struct case and called
+  ;; slop_eq_slop_string / slop_hash_slop_string, which do not exist, so cc
+  ;; rejected the record's helpers. A plain String field always worked. slop
+  ;; derive emits (String 1 .. 50) for an OpenAPI maxLength, so derived records
+  ;; hit it (#303).
+
+  (type P (record (name (String 1 .. 50)) (n Int)))
+  (type Tagged (union (named (String 1 .. 50)) (anon Int)))
+
+  (fn check-record-eq ()
+    (@intent "Field-wise == on a record with a ranged String field")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (not (== (P "a" 1) (P "a" 1)))
+        (set! fails (+ fails 1)))
+      (when (== (P "a" 1) (P "b" 1))
+        (set! fails (+ fails 1)))
+      (when (== (P "a" 1) (P "a" 2))
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-union-eq ()
+    (@intent "Payload == on a union variant holding a ranged String")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (not (== (Tagged (named "c")) (Tagged (named "c"))))
+        (set! fails (+ fails 1)))
+      (when (== (Tagged (named "c")) (Tagged (named "d")))
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-set-key ()
+    (@intent "The hash half: the record as a Set key, equal strings colliding")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut fails 0)
+            (mut s (set-new arena P)))
+        (set-put s (P "k" 1))
+        (set-put s (P "k" 1))
+        (set-put s (P "j" 1))
+        (when (!= (set-len s) 2)
+          (set! fails (+ fails 1)))
+        (when (not (set-has s (P "j" 1)))
+          (set! fails (+ fails 1)))
+        fails)))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any comparison is wrong")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (set! fails (+ fails (check-record-eq)))
+      (set! fails (+ fails (check-union-eq)))
+      (set! fails (+ fails (check-set-key)))
+      fails)))

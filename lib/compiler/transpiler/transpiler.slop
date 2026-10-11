@@ -3216,6 +3216,8 @@
       ((starts-with slop-type "(U32") true)
       ((starts-with slop-type "(U16") true)
       ((starts-with slop-type "(U8") true)
+      ;; A ranged (String lo .. hi) is a slop_string, hashed like String (#303)
+      ((starts-with slop-type "(String") true)
       (else false)))
 
   (fn is-range-type-alias ((ctx (Ptr TranspileContext)) (slop-type String))
@@ -3363,7 +3365,8 @@
     (let ((slop-type (resolve-payload-slop-type ctx raw-slop-type))
           (c-payload-type (resolved-payload-c-type ctx raw-slop-type slop-type raw-c-type)))
       (cond
-        ((string-eq slop-type "String")
+        ;; A ranged (String lo .. hi) is a slop_string too (#303)
+        ((or (string-eq slop-type "String") (string-eq c-payload-type "slop_string"))
           (ctx-str3 ctx "slop_hash_string(&" access ")"))
         ((or (string-eq slop-type "Int") (string-eq slop-type "I64") (string-eq slop-type "Symbol"))
           (ctx-str3 ctx "slop_hash_int(&" access ")"))
@@ -3409,7 +3412,8 @@
     (let ((slop-type (resolve-payload-slop-type ctx raw-slop-type))
           (c-payload-type (resolved-payload-c-type ctx raw-slop-type slop-type raw-c-type)))
       (cond
-        ((string-eq slop-type "String")
+        ;; A ranged (String lo .. hi) is a slop_string too (#303)
+        ((or (string-eq slop-type "String") (string-eq c-payload-type "slop_string"))
           (ctx-str5 ctx "slop_eq_string(&" a-access ", &" b-access ")"))
         ((or (string-eq slop-type "Int")
              (string-eq slop-type "I64")
