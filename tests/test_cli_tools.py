@@ -282,3 +282,26 @@ class TestRefHelp:
         for topic in TOPICS:
             assert topic in out
         assert "stdlib module" in out
+
+
+CLEAN_MODULE = """\
+(module clean
+  (fn f ((x Int))
+    (@intent "Add one")
+    (@spec ((Int) -> Int))
+    (+ x 1)))
+"""
+
+
+class TestCheckJson:
+    @needs_compiler
+    def test_json_stdout_is_only_json(self, monkeypatch, capsys, tmp_path):
+        # The "Using merged compiler" status line went to stdout ahead of the
+        # JSON document, so a consumer had to skip to the last line (#319)
+        path = tmp_path / "clean.slop"
+        path.write_text(CLEAN_MODULE)
+        rc, out, err = run_cli(monkeypatch, capsys, "check", "--json", str(path))
+        assert rc == 0
+        json.loads(out)
+        assert "Using merged compiler" not in out
+        assert "Using merged compiler" in err

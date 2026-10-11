@@ -2248,7 +2248,8 @@ def cmd_check(args):
         import subprocess
         cmd = [str(checker_bin)]
         if compiler_bin:
-            print(f"  Using merged compiler: {compiler_bin}")
+            # stderr, so `slop check --json` prints only the JSON on stdout (#319)
+            print(f"  Using merged compiler: {compiler_bin}", file=sys.stderr)
             cmd.append('check')
         if getattr(args, 'json', False):
             cmd.append('--json')
