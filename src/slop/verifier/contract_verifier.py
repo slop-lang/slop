@@ -745,7 +745,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     # ── End string operation axioms ─────────────────────────────────────
 
     def _call_site_axioms(self, call_sites, translator: Z3Translator, body: SExpr,
-                          early_exits, reached_guard) -> Tuple[List, List]:
+                          early_exits, reached_guard,
+                          caller_param_types: Dict[str, Any]) -> Tuple[List, List]:
         """Phase 12: each callee's contract, assumed where its call runs (#169, #134).
 
         The translation recorded every call to a user function with a contract,
@@ -769,7 +770,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         every call with the same arguments (#227), and the model reads state as
         if it never changed: of its posts only those that read no state are
         assumed, except at a call the function returns, whose end state is the
-        caller's. Its @pre still guards them, read as every @pre is.
+        caller's. Its @pre still guards them, read as every @pre is. And
+        wherever the call is, a post naming a parameter is kept only if the
+        callee cannot have changed the caller's value of that argument
+        (callee_contracts.unstable_arguments).
 
         Returns (axioms, tail_axioms). The tail axioms are the same facts with
         `$result` read as the caller's own, for a call in tail position - the
@@ -783,28 +787,41 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         """
         from .callee_contracts import (
             instantiate_callee_contract, callee_is_pure, params_are_values,
-            contract_is_state_free)
+            contract_is_state_free, callee_contract, unstable_arguments, _names_any)
         axioms: List = []
         tail_axioms: List = []
         tail_calls = self._tail_positions(body)
         result_var = translator.variables.get('$result')
         for site in call_sites:
+            stateful = not (callee_is_pure(translator, site.fn_name)
+                            or params_are_values(translator, site.fn_name))
+            # A post about an argument is about it as it was at the call; a
+            # stateful callee may change the caller's value through a pointer,
+            # after which the model still reads the same term (#242).
+            keep_tail = keep = None
+            if stateful:
+                contract = callee_contract(translator, site.fn_name)
+                unstable = unstable_arguments(
+                    translator, site.expr, contract[0] if contract else [], body,
+                    caller_param_types)
+
+                def keep_tail(expr, unstable=unstable):
+                    return not _names_any(expr, unstable)
+
+                def keep(expr, fn_name=site.fn_name, unstable=unstable):
+                    return (contract_is_state_free(translator, fn_name, expr)
+                            and not _names_any(expr, unstable))
             if id(site.expr) in tail_calls and result_var is not None \
                     and site.term.sort() == result_var.sort():
                 tail_axioms.extend(instantiate_callee_contract(
                     translator, site.fn_name, site.term, site.args, site.path,
-                    result_term=result_var, patterns=False))
+                    result_term=result_var, keep_post=keep_tail, patterns=False))
             guard = site.path
             if site.past_exit:
                 if early_exits is None:
                     continue
                 if reached_guard is not None:
                     guard = z3.And(guard, reached_guard)
-            keep = None
-            if not (callee_is_pure(translator, site.fn_name)
-                    or params_are_values(translator, site.fn_name)):
-                def keep(expr, fn_name=site.fn_name):
-                    return contract_is_state_free(translator, fn_name, expr)
             axioms.extend(instantiate_callee_contract(
                 translator, site.fn_name, site.term, site.args, guard,
                 keep_post=keep, patterns=False))
@@ -3642,6 +3659,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Declare parameter variables
         declared_param_names: Set[str] = set()
+        caller_param_types: Dict[str, Any] = {}
         for param in params:
             if isinstance(param, SList) and len(param) >= 2:
                 # Handle parameter modes: (name Type) or (in name Type) or (out name Type) or (mut name Type)
@@ -3659,6 +3677,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 if param_name and param_type_expr:
                     param_type = _parse_type_expr_simple(param_type_expr, self.type_env.type_registry)
                     translator.declare_variable(param_name, param_type)
+                    caller_param_types[param_name] = param_type
 
         # Declare $result for postconditions, assumptions and properties.
         #
@@ -4537,7 +4556,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for fact in binding_facts:
                 solver.add(fact)
             call_axioms, tail_call_axioms = self._call_site_axioms(
-                call_sites, translator, combined_body, early_exits, reached_guard)
+                call_sites, translator, combined_body, early_exits, reached_guard,
+                caller_param_types)
             for axiom in call_axioms:
                 solver.add(axiom)
             for axiom in tail_call_axioms:

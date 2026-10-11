@@ -24,7 +24,7 @@ import z3
 from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import (
     PrimitiveType, RangeType, EnumType, RecordType, UnionType, OptionType, ResultType,
-    ListType, ArrayType, MapType, PtrType,
+    ListType,
 )
 
 _MISSING = object()
@@ -351,102 +351,97 @@ def _payload_types(tr, scrutinee_type, tag: str):
     return None
 
 
-_SCALARS = frozenset(('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
-                      'Float', 'F32', 'F64', 'Bool', 'String', 'Unit', 'Arena'))
+# Forms whose value is a function of their operands' values alone, read in a
+# call's argument.
+_ARGUMENT_OPERATORS = frozenset((
+    '+', '-', '*', '/', '%', '==', '!=', '<', '<=', '>', '>=', 'and', 'or', 'not',
+))
 
 
-def _parts(tr, typ):
-    """The types a value of `typ` holds by value, or None if `typ` is not known."""
-    if isinstance(typ, PrimitiveType):
-        return () if typ.name in _SCALARS else None
-    if isinstance(typ, (RangeType, EnumType)):
-        return ()
-    if isinstance(typ, RecordType):
-        return tuple(typ.fields.values())
-    if isinstance(typ, UnionType):
-        parts = []
-        for tag in typ.variants:
-            recorded = typ.payload_types.get(tag)
-            if recorded is None:
-                first = typ.variants[tag]
-                recorded = (first,) if first is not None else ()
-            parts.extend(p for p in recorded if p is not None)
-        return tuple(parts)
-    if isinstance(typ, OptionType):
-        return (typ.inner,)
-    if isinstance(typ, ResultType):
-        return (typ.ok_type, typ.err_type)
-    if isinstance(typ, (ListType, ArrayType)):
-        return (typ.element_type,)
-    if isinstance(typ, MapType):
-        return (typ.key_type, typ.value_type)
-    return None         # closures, channels, threads, anything unknown
+def _caller_shares_its_storage(body) -> bool:
+    """True if `body` takes an address or builds a closure.
 
-
-def _pointee_types(tr, types):
-    """Every type a pointer reachable from values of `types` may point to.
-
-    None if some type on the way is not known well enough to say.
+    A local or parameter of the caller is a copy no one else holds, until the
+    caller takes `(addr x)` of it or a closure captures it (a closure captures
+    a `mut` local by reference). Then a callee may change it.
     """
-    pointees = []
-    seen = set()
-    stack = list(types)
-    while stack:
-        typ = _resolve(tr, stack.pop())
-        if typ is None:
-            return None
-        if id(typ) in seen:
-            continue
-        seen.add(id(typ))
-        if isinstance(typ, PtrType):
-            pointees.append(typ.pointee)
-            stack.append(typ.pointee)
-            continue
-        parts = _parts(tr, typ)
-        if parts is None:
-            return None
-        stack.extend(parts)
-    return pointees
+    if not isinstance(body, SList) or len(body) == 0:
+        return False
+    head = body[0]
+    if isinstance(head, Symbol):
+        if head.name == 'quote':
+            return False
+        if head.name in ('addr', 'fn', 'lambda'):
+            return True
+    return any(_caller_shares_its_storage(item) for item in body.items)
 
 
-def _holds_list(tr, typ, seen=frozenset()) -> bool:
-    """True if a value of `typ` holds, by value, a List header.
+def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
+                       caller_param_types) -> Set[str]:
+    """The parameters whose argument a stateful callee might change behind the call.
 
-    Of any element type: an alias, a range or a generic can make two element
-    types written differently the same one.
+    A post naming a parameter describes the argument as the call passed it.
+    The main model reads the caller's value after the call as the same term,
+    even where the callee wrote it through a pointer (#242), so such a post
+    would describe the changed value. An argument is safe when nothing the
+    callee holds can reach it: built from literals, names and operators, with
+    fields read only out of a parameter of the caller held by value, in a
+    caller that takes no address and builds no closure.
     """
-    typ = _resolve(tr, typ)
-    if typ is None:
-        return True
-    if id(typ) in seen:
-        return False
-    seen = seen | {id(typ)}
-    if isinstance(typ, ListType):
-        return True
-    if isinstance(typ, PtrType):
-        return False    # behind a pointer, not by value
-    parts = _parts(tr, typ)
-    if parts is None:
-        return True
-    return any(_holds_list(tr, part, seen) for part in parts)
+    shares = _caller_shares_its_storage(caller_body)
 
+    def by_value_record(name: str) -> Optional[RecordType]:
+        typ = _resolve(tr, caller_param_types.get(name))
+        return typ if isinstance(typ, RecordType) else None
 
-def _list_length_is_the_callers(tr, param_types, list_type) -> bool:
-    """True if the callee cannot change the caller's length of a List it was passed.
+    def field_chain_ok(root: str, fields: Sequence[str]) -> bool:
+        record = by_value_record(root)
+        for index, field_name in enumerate(fields):
+            if record is None or field_name not in record.fields:
+                return False
+            if index + 1 < len(fields):
+                record = _resolve(tr, record.fields[field_name])
+                if not isinstance(record, RecordType):
+                    return False
+        return True
 
-    A List is a header held by value: the callee's copy of one has its own
-    length. The caller's changes only through a pointer to where the caller
-    keeps that header - `(g xs (addr xs))` pushes to the caller's xs while a
-    post reads the callee's copy. So no pointer reachable from the
-    parameters may lead to a value holding a List header.
-    """
-    list_type = _resolve(tr, list_type)
-    if not isinstance(list_type, ListType):
+    def chain(node):
+        """(root, [fields]) for `p.a.b` or `(. (. p a) b)`, else None."""
+        if isinstance(node, Symbol):
+            parts = node.name.split('.')
+            return parts[0], parts[1:]
+        if is_form(node, '.') and len(node) == 3 and isinstance(node[2], Symbol):
+            inner = chain(node[1])
+            if inner is None:
+                return None
+            return inner[0], inner[1] + [node[2].name]
+        return None
+
+    def stable(node) -> bool:
+        if isinstance(node, (Number, String)):
+            return True
+        if isinstance(node, Symbol):
+            if node.name in ('true', 'false', 'nil') or node.name.startswith("'"):
+                return True
+            root, fields = chain(node)
+            if shares:
+                return False
+            return not fields or field_chain_ok(root, fields)
+        if not isinstance(node, SList) or len(node) == 0 or not isinstance(node[0], Symbol):
+            return False
+        head = node[0].name
+        if head == 'quote':
+            return True
+        if head == '.':
+            found = chain(node)
+            return found is not None and not shares and field_chain_ok(*found)
+        if head == 'cast' and len(node) == 3:
+            return stable(node[2])
+        if head in _ARGUMENT_OPERATORS:
+            return all(stable(item) for item in node.items[1:])
         return False
-    pointees = _pointee_types(tr, param_types)
-    if pointees is None:
-        return False
-    return not any(_holds_list(tr, target) for target in pointees)
+
+    return {param for param, arg in zip(params, call_expr.items[1:]) if not stable(arg)}
 
 
 def contract_is_state_free(tr, fn_name: str, expr) -> bool:
@@ -461,10 +456,10 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     What is read out of a value is fixed once the call returns: a field of a
     record passed or returned by value - whatever else the record holds -
     and the payload of a Result, an Option or a union, through `match`. So
-    is a String's length, and the length of a List - a header held by value -
-    unless a pointer the callee can reach could lead to where the caller
-    keeps that header (_list_length_is_the_callers). Anything read through a
-    pointer, out of a collection's contents, or by calling a function is not.
+    is a String's length, and the length of a List - a header held by value,
+    which a callee cannot push to unless `mut`, and `mut` on a List is an
+    error (spec 3.4). Anything read through a pointer, out of a collection's
+    contents, or by calling a function is not.
     """
     types = _callee_types(tr, fn_name)
     if types is None:
@@ -472,8 +467,6 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     param_types, return_type = types
     env = dict(param_types)
     env['$result'] = return_type
-    if any(t is None for t in param_types.values()):
-        return False
 
     def type_of(node, env):
         """The declared type of a name or a by-value field chain, or None."""
@@ -518,11 +511,12 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
         if head.name == '.':
             return len(node) == 3 and free(node[1], env) and by_value_record(node[1], env)
         if head.name == 'list-len':
-            # The length in a List header the callee holds by value: a
-            # parameter, a List field of one, or the List returned.
+            # The length in a List header the callee holds by value: its copy
+            # of a parameter (or of a List field of one), or the List it
+            # returns. Whether the caller's own header can change behind the
+            # call is the caller's question (unstable_arguments).
             return (len(node) == 2 and free(node[1], env)
-                    and _list_length_is_the_callers(tr, list(param_types.values()),
-                                                    type_of(node[1], env)))
+                    and isinstance(_resolve(tr, type_of(node[1], env)), ListType))
         if head.name == 'match' and len(node) >= 3:
             if not free(node[1], env):
                 return False

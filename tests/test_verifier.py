@@ -13934,6 +13934,37 @@ _CALLEE_POST_LEAKS['length-post-with-a-pointer-to-the-same-list'] = '''(module m
           (let ((a (g xs (addr xs))))
             (- (cast Int (list-len xs)) a)))))'''
 
+# g's copy of r keeps n; the caller's r changes through the pointer to it
+# (Codex review round 6) - for a mut copy and for a plain one.
+_CALLEE_POST_LEAKS['post-about-an-argument-the-callee-changes-through-a-pointer'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((mut r R) (p (Ptr R)))
+        (@spec ((R (Ptr R)) -> Int))
+        (@post (== $result r.n))
+        (do (set! p.n 1) r.n))
+      (fn f ()
+        (@spec (() -> Int))
+        (@post (== $result 0))
+        (let ((mut r (record-new R (n 0))))
+          (let ((a (g r (addr r))))
+            (- r.n a)))))'''
+_CALLEE_POST_LEAKS['post-about-a-plain-argument-changed-through-a-pointer'] = (
+    _CALLEE_POST_LEAKS['post-about-an-argument-the-callee-changes-through-a-pointer']
+    .replace('(fn g ((mut r R)', '(fn g ((r R)'))
+_CALLEE_POST_LEAKS['length-post-with-a-pointer-to-an-alias-of-the-list-type'] = '''(module m
+      (type NonNegative (Int 0 ..))
+      (fn g ((xs (List Int)) (p (Ptr (List NonNegative))))
+        (@spec (((List Int) (Ptr (List NonNegative))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do (list-push (deref p) 1)
+            (cast Int (list-len xs))))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@post (== $result 0))
+        (let ((mut xs (list-new arena Int)))
+          (let ((a (g xs (cast (Ptr (List NonNegative)) (addr xs)))))
+            (- (cast Int (list-len xs)) a)))))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))
