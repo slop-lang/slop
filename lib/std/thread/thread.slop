@@ -1,7 +1,8 @@
 ;; ============================================================
 ;; Thread and Channel Concurrency Primitives
 ;;
-;; Type-safe SLOP concurrency built on pthreads.
+;; Type-safe SLOP concurrency built on the runtime's portable threads
+;; (pthreads on POSIX, the Win32 thread API on Windows).
 ;;
 ;; Provides:
 ;; - Typed channels: (Chan T) for thread-safe communication
@@ -14,7 +15,7 @@
 ;;       (spawn arena (fn () (send ch 42)))
 ;;       (recv ch)))               ;; Blocks until value available
 ;;
-;; Implementation: Pure SLOP using pthread FFI. The transpiler
+;; Implementation: Pure SLOP over the runtime's thread FFI. The transpiler
 ;; generates the channel and thread state structs; this module
 ;; provides the operations.
 ;; ============================================================
@@ -35,25 +36,24 @@
     Closure)
 
   ;; ============================================================
-  ;; FFI: pthreads
+  ;; FFI: the runtime's portable threads and locks
   ;; ============================================================
 
-  ;; Threads start and are joined through the runtime, which aborts when
-  ;; either fails rather than let a thread that never ran be joined (#192)
+  ;; pthreads on POSIX, the Win32 thread API on Windows. Each call aborts
+  ;; with the error instead of returning it, so a thread that never ran
+  ;; can't be joined (#192) and a failed lock can't be ignored.
   (ffi "slop_runtime.h"
     (slop-thread-start ((id (Ptr ThreadHandle)) (entry (Ptr Void)) (arg (Ptr Void))) Unit)
-    (slop-thread-wait ((id ThreadHandle)) Unit))
-
-  (ffi "pthread.h"
-    (pthread-mutex-init ((mutex (Ptr Void)) (attr (Ptr Void))) Int)
-    (pthread-mutex-destroy ((mutex (Ptr Void))) Int)
-    (pthread-mutex-lock ((mutex (Ptr Void))) Int)
-    (pthread-mutex-unlock ((mutex (Ptr Void))) Int)
-    (pthread-cond-init ((cond (Ptr Void)) (attr (Ptr Void))) Int)
-    (pthread-cond-destroy ((cond (Ptr Void))) Int)
-    (pthread-cond-wait ((cond (Ptr Void)) (mutex (Ptr Void))) Int)
-    (pthread-cond-signal ((cond (Ptr Void))) Int)
-    (pthread-cond-broadcast ((cond (Ptr Void))) Int))
+    (slop-thread-wait ((id ThreadHandle)) Unit)
+    (slop-mutex-init ((mutex (Ptr Void))) Unit)
+    (slop-mutex-destroy ((mutex (Ptr Void))) Unit)
+    (slop-mutex-lock ((mutex (Ptr Void))) Unit)
+    (slop-mutex-unlock ((mutex (Ptr Void))) Unit)
+    (slop-cond-init ((cond (Ptr Void))) Unit)
+    (slop-cond-destroy ((cond (Ptr Void))) Unit)
+    (slop-cond-wait ((cond (Ptr Void)) (mutex (Ptr Void))) Unit)
+    (slop-cond-signal ((cond (Ptr Void))) Unit)
+    (slop-cond-broadcast ((cond (Ptr Void))) Unit))
 
   ;; ============================================================
   ;; Types
@@ -67,7 +67,7 @@
   ;; Thread state for spawn and spawn-closure
   ;; Mirrors the transpiler-generated slop_thread_int structure
   (type ThreadInt (record
-    (id ThreadHandle)       ;; pthread_t handle (offset 0)
+    (id ThreadHandle)       ;; slop_thread_t handle (offset 0)
     (result Int)            ;; Thread return value (offset 8)
     (func (Ptr Void))       ;; Function pointer (offset 16)
     (env (Ptr Void))        ;; Closure environment (nil for regular functions) (offset 24)
@@ -79,7 +79,7 @@
     (func (Ptr Void))       ;; Function: (Ptr (Chan Int)) -> Int
     (chan (Ptr (Chan Int))) ;; Channel argument passed to function
     (env (Ptr Void))        ;; Closure environment (nil for regular functions)
-    (id ThreadHandle)       ;; pthread_t handle
+    (id ThreadHandle)       ;; slop_thread_t handle
     (result Int)            ;; Thread return value
     (done Bool)))
 
@@ -93,11 +93,11 @@
   ;; like (List T). The transpiler generates type-specific structs:
   ;;
   ;; (Chan Int) -> slop_chan_int with fields:
-  ;;   mutex[64], not_empty[64], not_full[64] - pthread storage
+  ;;   mutex (slop_mutex_t), not_empty and not_full (slop_cond_t)
   ;;   buffer, capacity, count, head, tail, closed
   ;;
   ;; (Thread Int) -> slop_thread_int with fields:
-  ;;   id (pthread_t), result, func, done
+  ;;   id (slop_thread_t), result, func, done
   ;; Plus a trampoline function: slop_thread_int_entry
 
   ;; ============================================================
@@ -111,10 +111,10 @@
     (@alloc arena)
     (@post {$result != nil})
     (let ((ch (arena-alloc arena (sizeof (Chan T)))))
-      ;; Initialize pthread primitives
-      (pthread-mutex-init (cast (Ptr Void) (addr ch.mutex)) nil)
-      (pthread-cond-init (cast (Ptr Void) (addr ch.not-empty)) nil)
-      (pthread-cond-init (cast (Ptr Void) (addr ch.not-full)) nil)
+      ;; Initialize the lock and condition variables
+      (slop-mutex-init (cast (Ptr Void) (addr ch.mutex)))
+      (slop-cond-init (cast (Ptr Void) (addr ch.not-empty)))
+      (slop-cond-init (cast (Ptr Void) (addr ch.not-full)))
       ;; Initialize channel state
       (set! ch.buffer nil)
       (set! ch.capacity 0)
@@ -132,10 +132,10 @@
     (@pre {capacity >= 1})
     (@post {$result != nil})
     (let ((ch (arena-alloc arena (sizeof (Chan T)))))
-      ;; Initialize pthread primitives
-      (pthread-mutex-init (cast (Ptr Void) (addr ch.mutex)) nil)
-      (pthread-cond-init (cast (Ptr Void) (addr ch.not-empty)) nil)
-      (pthread-cond-init (cast (Ptr Void) (addr ch.not-full)) nil)
+      ;; Initialize the lock and condition variables
+      (slop-mutex-init (cast (Ptr Void) (addr ch.mutex)))
+      (slop-cond-init (cast (Ptr Void) (addr ch.not-empty)))
+      (slop-cond-init (cast (Ptr Void) (addr ch.not-full)))
       ;; Initialize channel state with buffer
       (set! ch.buffer (arena-alloc arena (* capacity (sizeof T))))
       (set! ch.capacity (cast U64 capacity))
@@ -151,11 +151,11 @@
     (@spec (((Ptr (Chan T))) -> Unit))
     (@pre {ch != nil})
     ;; Lock, set closed flag, wake all waiters
-    (pthread-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
+    (slop-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
     (set! ch.closed true)
-    (pthread-cond-broadcast (cast (Ptr Void) (addr ch.not-empty)))
-    (pthread-cond-broadcast (cast (Ptr Void) (addr ch.not-full)))
-    (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+    (slop-cond-broadcast (cast (Ptr Void) (addr ch.not-empty)))
+    (slop-cond-broadcast (cast (Ptr Void) (addr ch.not-full)))
+    (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
     unit)
 
   ;; ============================================================
@@ -167,12 +167,12 @@
     (@generic (T))
     (@spec (((Ptr (Chan T)) T) -> (Result Unit ChanError)))
     (@pre {ch != nil})
-    (pthread-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
+    (slop-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
 
     ;; Check if channel is closed
     (if ch.closed
         (do
-          (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+          (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
           (error ChanError.send-on-closed))
 
         ;; Handle unbuffered vs buffered
@@ -181,42 +181,42 @@
             (do
               ;; Wait until count is 0 (receiver took previous value) or closed
               (while (and (> ch.count 0) (not ch.closed))
-                (pthread-cond-wait (cast (Ptr Void) (addr ch.not-full))
+                (slop-cond-wait (cast (Ptr Void) (addr ch.not-full))
                                    (cast (Ptr Void) (addr ch.mutex))))
               (if ch.closed
                   (do
-                    (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+                    (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
                     (error ChanError.send-on-closed))
                   (do
                     ;; For unbuffered, use a single-element inline buffer
                     ;; We store the value in the buffer pointer itself (type punning)
                     (set! ch.buffer (cast (Ptr Int) (cast U64 value)))
                     (set! ch.count 1)
-                    (pthread-cond-signal (cast (Ptr Void) (addr ch.not-empty)))
+                    (slop-cond-signal (cast (Ptr Void) (addr ch.not-empty)))
                     ;; Wait for receiver to take it (synchronous handoff)
                     (while (and (> ch.count 0) (not ch.closed))
-                      (pthread-cond-wait (cast (Ptr Void) (addr ch.not-full))
+                      (slop-cond-wait (cast (Ptr Void) (addr ch.not-full))
                                          (cast (Ptr Void) (addr ch.mutex))))
-                    (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+                    (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
                     (ok unit))))
 
             ;; Buffered: wait for space, enqueue
             (do
               ;; Wait for space in buffer
               (while (and (>= ch.count ch.capacity) (not ch.closed))
-                (pthread-cond-wait (cast (Ptr Void) (addr ch.not-full))
+                (slop-cond-wait (cast (Ptr Void) (addr ch.not-full))
                                    (cast (Ptr Void) (addr ch.mutex))))
               (if ch.closed
                   (do
-                    (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+                    (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
                     (error ChanError.send-on-closed))
                   (do
                     ;; Enqueue value
                     (set! (deref (+ ch.buffer ch.tail)) value)
                     (set! ch.tail (% (+ ch.tail 1) ch.capacity))
                     (set! ch.count (+ ch.count 1))
-                    (pthread-cond-signal (cast (Ptr Void) (addr ch.not-empty)))
-                    (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+                    (slop-cond-signal (cast (Ptr Void) (addr ch.not-empty)))
+                    (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
                     (ok unit)))))))
 
   (fn recv ((ch (Ptr (Chan T))))
@@ -224,17 +224,17 @@
     (@generic (T))
     (@spec (((Ptr (Chan T))) -> (Result T ChanError)))
     (@pre {ch != nil})
-    (pthread-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
+    (slop-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
 
     ;; Wait for data or close
     (while (and (= ch.count 0) (not ch.closed))
-      (pthread-cond-wait (cast (Ptr Void) (addr ch.not-empty))
+      (slop-cond-wait (cast (Ptr Void) (addr ch.not-empty))
                          (cast (Ptr Void) (addr ch.mutex))))
 
     ;; Check if empty and closed
     (if (and (= ch.count 0) ch.closed)
         (do
-          (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+          (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
           (error ChanError.closed))
 
         ;; Dequeue value
@@ -242,16 +242,16 @@
             ;; Unbuffered: value stored in buffer pointer
             (let ((value (cast Int (cast U64 ch.buffer))))
               (set! ch.count 0)
-              (pthread-cond-signal (cast (Ptr Void) (addr ch.not-full)))
-              (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+              (slop-cond-signal (cast (Ptr Void) (addr ch.not-full)))
+              (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
               (ok value))
 
             ;; Buffered: dequeue from ring buffer
             (let ((value (deref (+ ch.buffer ch.head))))
               (set! ch.head (% (+ ch.head 1) ch.capacity))
               (set! ch.count (- ch.count 1))
-              (pthread-cond-signal (cast (Ptr Void) (addr ch.not-full)))
-              (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+              (slop-cond-signal (cast (Ptr Void) (addr ch.not-full)))
+              (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
               (ok value)))))
 
   (fn try-recv ((ch (Ptr (Chan T))))
@@ -259,12 +259,12 @@
     (@generic (T))
     (@spec (((Ptr (Chan T))) -> (Result T ChanError)))
     (@pre {ch != nil})
-    (pthread-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
+    (slop-mutex-lock (cast (Ptr Void) (addr ch.mutex)))
 
     ;; Check for data
     (if (= ch.count 0)
         (do
-          (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+          (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
           (if ch.closed
               (error ChanError.closed)
               (error ChanError.would-block)))
@@ -274,16 +274,16 @@
             ;; Unbuffered
             (let ((value (cast Int (cast U64 ch.buffer))))
               (set! ch.count 0)
-              (pthread-cond-signal (cast (Ptr Void) (addr ch.not-full)))
-              (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+              (slop-cond-signal (cast (Ptr Void) (addr ch.not-full)))
+              (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
               (ok value))
 
             ;; Buffered
             (let ((value (deref (+ ch.buffer ch.head))))
               (set! ch.head (% (+ ch.head 1) ch.capacity))
               (set! ch.count (- ch.count 1))
-              (pthread-cond-signal (cast (Ptr Void) (addr ch.not-full)))
-              (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
+              (slop-cond-signal (cast (Ptr Void) (addr ch.not-full)))
+              (slop-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
               (ok value)))))
 
   ;; ============================================================
@@ -346,7 +346,7 @@
                          (cast (Ptr Void) th))
       th))
 
-  ;; Trampoline for spawn-with-chan - called by pthread, calls func(chan) or func(env, chan)
+  ;; Trampoline for spawn-with-chan - runs on the new thread, calls func(chan) or func(env, chan)
   (fn thread-with-chan-entry ((arg (Ptr Void)))
     (@intent "Entry point for threads spawned with spawn-with-chan")
     (@spec (((Ptr Void)) -> (Ptr Void)))

@@ -4266,7 +4266,7 @@ types_ResolvedType* infer_resolve_simple_type(type_env_TypeEnv* env, slop_string
             } else if (string_eq(type_name, SLOP_STR("U64"))) {
                 return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("U64"), ((slop_option_string){.has_value = false}), SLOP_STR("uint64_t"));
             } else if (string_eq(type_name, SLOP_STR("ThreadHandle"))) {
-                return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("ThreadHandle"), ((slop_option_string){.has_value = false}), SLOP_STR("pthread_t"));
+                return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("ThreadHandle"), ((slop_option_string){.has_value = false}), SLOP_STR("slop_thread_t"));
             } else if (string_eq(type_name, SLOP_STR("Char"))) {
                 return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("Char"), ((slop_option_string){.has_value = false}), SLOP_STR("char"));
             } else if (string_eq(type_name, SLOP_STR("Void"))) {

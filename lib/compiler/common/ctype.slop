@@ -128,7 +128,7 @@
         (string-eq c-name "slop_bytes")
         (string-eq c-name "slop_arena")
         (string-eq c-name "slop_arena*")
-        (string-eq c-name "pthread_t")))
+        (string-eq c-name "slop_thread_t")))
 
   ;; ============================================================
   ;; Type Category Predicates
@@ -199,7 +199,7 @@
       ((string-eq name "Void") (some "void"))
       ((string-eq name "Arena") (some "slop_arena*"))
       ((string-eq name "Milliseconds") (some "int64_t"))
-      ((string-eq name "ThreadHandle") (some "pthread_t"))
+      ((string-eq name "ThreadHandle") (some "slop_thread_t"))
       (else none)))
 
   ;; ============================================================

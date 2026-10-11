@@ -32,7 +32,7 @@ uint8_t ctype_is_builtin_type(slop_string name) {
 }
 
 uint8_t ctype_is_builtin_c_type(slop_string c_name) {
-    return ((string_eq(c_name, SLOP_STR("int64_t"))) || (string_eq(c_name, SLOP_STR("int32_t"))) || (string_eq(c_name, SLOP_STR("int16_t"))) || (string_eq(c_name, SLOP_STR("int8_t"))) || (string_eq(c_name, SLOP_STR("uint64_t"))) || (string_eq(c_name, SLOP_STR("uint32_t"))) || (string_eq(c_name, SLOP_STR("uint16_t"))) || (string_eq(c_name, SLOP_STR("uint8_t"))) || (string_eq(c_name, SLOP_STR("double"))) || (string_eq(c_name, SLOP_STR("float"))) || (string_eq(c_name, SLOP_STR("bool"))) || (string_eq(c_name, SLOP_STR("char"))) || (string_eq(c_name, SLOP_STR("void"))) || (string_eq(c_name, SLOP_STR("slop_string"))) || (string_eq(c_name, SLOP_STR("slop_bytes"))) || (string_eq(c_name, SLOP_STR("slop_arena"))) || (string_eq(c_name, SLOP_STR("slop_arena*"))) || (string_eq(c_name, SLOP_STR("pthread_t"))));
+    return ((string_eq(c_name, SLOP_STR("int64_t"))) || (string_eq(c_name, SLOP_STR("int32_t"))) || (string_eq(c_name, SLOP_STR("int16_t"))) || (string_eq(c_name, SLOP_STR("int8_t"))) || (string_eq(c_name, SLOP_STR("uint64_t"))) || (string_eq(c_name, SLOP_STR("uint32_t"))) || (string_eq(c_name, SLOP_STR("uint16_t"))) || (string_eq(c_name, SLOP_STR("uint8_t"))) || (string_eq(c_name, SLOP_STR("double"))) || (string_eq(c_name, SLOP_STR("float"))) || (string_eq(c_name, SLOP_STR("bool"))) || (string_eq(c_name, SLOP_STR("char"))) || (string_eq(c_name, SLOP_STR("void"))) || (string_eq(c_name, SLOP_STR("slop_string"))) || (string_eq(c_name, SLOP_STR("slop_bytes"))) || (string_eq(c_name, SLOP_STR("slop_arena"))) || (string_eq(c_name, SLOP_STR("slop_arena*"))) || (string_eq(c_name, SLOP_STR("slop_thread_t"))));
 }
 
 uint8_t ctype_is_int_type(slop_string name) {
@@ -93,7 +93,7 @@ slop_option_string ctype_builtin_type_c(slop_arena* arena, slop_string name) {
     } else if (string_eq(name, SLOP_STR("Milliseconds"))) {
         return (slop_option_string){.has_value = 1, .value = SLOP_STR("int64_t")};
     } else if (string_eq(name, SLOP_STR("ThreadHandle"))) {
-        return (slop_option_string){.has_value = 1, .value = SLOP_STR("pthread_t")};
+        return (slop_option_string){.has_value = 1, .value = SLOP_STR("slop_thread_t")};
     } else {
         return (slop_option_string){.has_value = false};
     }

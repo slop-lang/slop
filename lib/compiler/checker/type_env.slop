@@ -215,7 +215,7 @@
             (u64 (resolved-type-new arena 'rk-primitive "U64" (none) "uint64_t"))
             (f32 (resolved-type-new arena 'rk-primitive "F32" (none) "float"))
             (f64 (resolved-type-new arena 'rk-primitive "F64" (none) "double"))
-            (threadhandle (resolved-type-new arena 'rk-primitive "ThreadHandle" (none) "pthread_t")))
+            (threadhandle (resolved-type-new arena 'rk-primitive "ThreadHandle" (none) "slop_thread_t")))
         (do
           (list-push (. (deref env) types) i8)
           (list-push (. (deref env) types) i16)
