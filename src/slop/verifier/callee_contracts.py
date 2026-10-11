@@ -24,7 +24,7 @@ import z3
 from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import (
     PrimitiveType, RangeType, EnumType, RecordType, UnionType, OptionType, ResultType,
-    ListType,
+    ListType, PtrType,
 )
 
 _MISSING = object()
@@ -424,6 +424,38 @@ def _caller_bindings(body) -> dict:
     return sources
 
 
+def _written_in_place(body) -> Set[str]:
+    """The names `body` changes in place: a field of one set, a collection
+    write through one or a field of one. Not a `set!` of the bare name, which
+    the translator gives a new version."""
+    names: Set[str] = set()
+
+    def walk(node):
+        if not isinstance(node, SList) or len(node) == 0:
+            return
+        head = node[0]
+        if isinstance(head, Symbol):
+            if head.name == 'quote':
+                return
+            if head.name == 'set!' and len(node) >= 3:
+                target = node[1]
+                if len(node) == 4 and isinstance(target, Symbol):
+                    names.add(target.name.split('.', 1)[0])
+                else:
+                    root, field_name = _root_and_field(target)
+                    if root is not None and field_name is not None:
+                        names.add(root)
+            elif head.name in _COLLECTION_WRITES and len(node) >= 2:
+                root, _ = _root_and_field(node[1])
+                if root is not None:
+                    names.add(root)
+        for item in node.items:
+            walk(item)
+
+    walk(body)
+    return names
+
+
 def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
                        caller_param_types) -> Set[str]:
     """The parameters whose argument a stateful callee might change behind the call.
@@ -442,13 +474,22 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
     if _caller_shares_its_storage(caller_body):
         return set(params)
     sources = _caller_bindings(caller_body)
+    # Names the caller changes in place - a field set, a push - which the model
+    # does not version (#242): a read after the call is the term before it. A
+    # parameter declared as a pointer is not among them: a field set through
+    # it changes what it points to, not the pointer passed, and a read through
+    # it is a state read the contract filter already refuses.
+    written_in_place = {
+        name for name in _written_in_place(caller_body)
+        if not isinstance(_resolve(tr, caller_param_types.get(name)), PtrType)
+        or name in sources}
 
     def by_value_record(name: str) -> Optional[RecordType]:
         typ = _resolve(tr, caller_param_types.get(name))
         return typ if isinstance(typ, RecordType) else None
 
     def field_chain_ok(root: str, fields: Sequence[str]) -> bool:
-        if root in sources:
+        if root in sources or root in written_in_place:
             return False        # a local's type is not known here
         record = by_value_record(root)
         for index, field_name in enumerate(fields):
@@ -475,6 +516,8 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
     visiting: Set[str] = set()
 
     def stable_name(name: str) -> bool:
+        if name in written_in_place:
+            return False
         if name not in sources:
             return True         # a parameter, a constant, an enum value
         if name in visiting:

@@ -14034,6 +14034,22 @@ _CALLEE_POST_LEAKS['pre-reading-state-the-callee-writes'] = '''(module m
         (@post (implies (== p.n 1) (== $result 1)))
         (g p)))'''
 
+# The caller itself sets a field of the argument after the call, which the
+# model does not version (Codex review round 10).
+_CALLEE_POST_LEAKS['argument-the-caller-changes-in-place-after-the-call'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((r R) (p (Ptr R)))
+        (@spec ((R (Ptr R)) -> Int))
+        (@post (== $result r.n))
+        (do (set! p.n 2) r.n))
+      (fn f ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@post (== $result 0))
+        (let ((mut r (record-new R (n 0))))
+          (let ((x (g r p)))
+            (set! r.n 1)
+            (- r.n x)))))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))
