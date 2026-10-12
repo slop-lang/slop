@@ -39,6 +39,7 @@ These functions/patterns do NOT exist in SLOP - use the alternatives:
 | `(list-push x v)` where x is a for-each/match binding | grow a `(let ((mut c x)))` copy and write it back, or use `(Ptr T)` elements |
 | `(is-ok r)`, `(try ...)`, `(put ...)`, `(array ...)` | not implemented: `match` the Result; `(let ((mut c r)) (set! c f v) c)`; `(list T ...)` |
 | Definitions outside `(module ...)` | All `(type)`, `(fn)`, `(const)` go inside the module form |
+| A variable, parameter or function named `true`, `false`, `nil`, `none` or `unit` | another name -- these are literals, and naming anything after one is an error |
 
 ## Module Structure
 

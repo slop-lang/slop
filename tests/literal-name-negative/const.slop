@@ -1,0 +1,9 @@
+(module main
+  (@intent "A constant named like a literal is an error (#354)")
+
+  (const none Int 4)
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    0))

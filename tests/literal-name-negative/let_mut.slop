@@ -1,0 +1,8 @@
+(module main
+  (@intent "A mutable let binding named like a literal is an error (#354)")
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((mut nil 0))
+      0)))

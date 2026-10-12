@@ -1,0 +1,17 @@
+(module main
+  (@intent "A payload binding named like a literal is an error; true and false there stay literal patterns (#354)")
+
+  (type Pair (union (two Bool Int) (one Int)))
+
+  (fn second ((p Pair))
+    (@intent "The Int of a pair")
+    (@spec ((Pair) -> Int))
+    (match p
+      ((two true n) (if true n 0))
+      ((two false n) n)
+      ((one unit) 0)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (second (union-new Pair one 3))))

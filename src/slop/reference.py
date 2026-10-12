@@ -995,7 +995,9 @@ module name are an error naming both files.
 3.14  1.5e-3  2E10                       ; Float: a dot or an exponent
 "text"                                   ; String; escapes \\n \\t \\r \\" \\\\
 'red                                     ; Quoted symbol (enum value)
-true false nil unit
+true false nil none unit
+; Literals are reserved: no variable, parameter, constant, function or type
+; can be named true, false, nil, none or unit.
 ; A number must be followed by a space or delimiter: 3.14f, 1. and 0x1F are
 ; parse errors. (Int 0..9) is fine: .. after a number is a range.
 
@@ -1162,6 +1164,7 @@ These DO NOT exist in SLOP - use the alternatives:
 | `(list-push x v)` on a for-each/match binding | grow a `(let ((mut c x)))` copy and write it back, or use `(Ptr T)` elements |
 | a `mut` variable captured by a spawned lambda | `(let ((share v)) (spawn arena (fn () ... share ...)))` |
 | `(break)` outside a loop | `(return ...)`, or restructure the loop |
+| a variable, parameter or function named `true`, `false`, `nil`, `none` or `unit` | another name -- these are literals, and naming anything after one is an error |
 
 ### Module Structure
 

@@ -22,6 +22,7 @@
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type
                  BindingOrigin MutationKind mutation-error-message param-mode-error-message
                  if-operand-count-message union-type-constructor-message comparison-operand-count-message
+                 is-literal-name literal-name-message
                  RangeBounds range-bounds-new range-bounds-unbounded range-add range-sub range-mul
                  range-union resolved-type-with-range int-range-expr-bounds))
   (import type-env (TypeEnv env-arena env-push-scope env-pop-scope
@@ -999,6 +1000,7 @@
                           ((some var-expr)
                             (let ((var-name (sexpr-get-symbol-name var-expr)))
                               (when (not (string-eq var-name ""))
+                                (check-binding-name env binding-form 0 "variable")
                                 (env-push-scope env)
                                 (env-bind-var env var-name (env-get-int-type env))
                                 ;; Infer start and end expressions
@@ -1056,6 +1058,7 @@
                                                            (env-add-warning env msg coll-line coll-col)
                                                            (env-get-unknown-type env))))))
                                       ;; Push scope, bind var, infer body, pop scope
+                                      (check-binding-name env binding-form 0 "variable")
                                       (env-push-scope env)
                                       (env-bind-var env var-name elem-type)
                                       ;; Infer all body expressions (discard results)
@@ -3091,6 +3094,9 @@
                     ((some binding-expr)
                       (let ((binding-name (sexpr-get-symbol-name binding-expr)))
                         (when (not (string-eq binding-name ""))
+                          ;; true and false in a payload are literal patterns, not bindings
+                          (when (not (or (string-eq binding-name "true") (string-eq binding-name "false")))
+                            (check-binding-name env pattern 1 "variable"))
                           ;; Check if scrutinee is a generic type - if so, bind to generic
                           (let ((scrutinee-name (. (deref scrutinee-type) name))
                                 (scrutinee-kind (. (deref scrutinee-type) kind)))
@@ -3142,6 +3148,7 @@
                                                              (not (string-eq extra-name "_"))
                                                              (not (string-eq extra-name "true"))
                                                              (not (string-eq extra-name "false")))
+                                                    (check-binding-name env pattern pi "variable")
                                                     (let ((type-idx (- pi 1)))
                                                       (if (< type-idx num-types)
                                                         (match (list-get payload-types type-idx)
@@ -3546,6 +3553,20 @@
               (env-add-error env msg fn-line fn-col)))))
       (_ (do))))
 
+  (fn check-binding-name ((env (Ptr TypeEnv)) (form (Ptr SExpr)) (idx Int) (what String))
+    (@intent "Report the name at idx in form when it is a literal, which no binding can take")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) Int String) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= form nil))
+    ;; Every read of the name is the literal, so the binding would never be read (#354)
+    (match (sexpr-list-get form idx)
+      ((some name-expr)
+        (let ((name (sexpr-get-symbol-name name-expr)))
+          (when (is-literal-name name)
+            (env-add-error env (literal-name-message (env-arena env) name what)
+                           (sexpr-line name-expr) (sexpr-col name-expr)))))
+      ((none) (do))))
+
   (fn bind-param-from-form ((env (Ptr TypeEnv)) (param-form (Ptr SExpr)))
     (@intent "Bind a function parameter from its form (param-name Type) or (mode param-name Type)")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
@@ -3562,12 +3583,14 @@
             ((some name-expr)
               (let ((param-name (sexpr-get-symbol-name name-expr)))
                 (when (not (string-eq param-name ""))
+                  (check-binding-name env param-form 1 "parameter")
                   (let ((param-type (get-param-type-from-form env param-form)))
                     (check-param-mode env first-name param-name param-type name-expr)
                     (env-bind-var-as env param-name param-type (string-eq first-name "mut") 'origin-param)))))
             ((none) (do)))
           ;; (name Type)
           (when (not (string-eq first-name ""))
+            (check-binding-name env param-form 0 "parameter")
             (let ((param-type (get-param-type-from-form env param-form)))
               (env-bind-var-as env first-name param-type false 'origin-param)))))))
 
@@ -3734,6 +3757,8 @@
                 (val-type (match (. (deref coll-type) inner-type2)
                             ((some t) t)
                             ((none) (env-get-unknown-type env)))))
+            (check-binding-name env pattern 0 "variable")
+            (check-binding-name env pattern 1 "variable")
             (env-push-scope env)
             (when (not (string-eq key-name ""))
               (env-bind-var env key-name key-type))
@@ -3869,6 +3894,7 @@
                   ((some name-expr)
                     (let ((var-name (sexpr-get-symbol-name name-expr)))
                       (when (not (string-eq var-name ""))
+                        (check-binding-name env binding-form 1 "variable")
                         ;; Get the value expression (last element)
                         (let ((binding-len (sexpr-list-len binding-form)))
                           (match (sexpr-list-get binding-form (- binding-len 1))
@@ -3899,6 +3925,7 @@
                   ((none) (do))))
               ;; Immutable: (name expr) or (name Type expr)
               (when (not (string-eq first-name ""))
+                (check-binding-name env binding-form 0 "variable")
                 (let ((binding-len (sexpr-list-len binding-form)))
                   (if (== binding-len 3)
                     ;; Typed binding: (name Type expr) - get expr at position 2
@@ -3991,6 +4018,8 @@
                     (else (do))))
                 ((none) (do)))
               ;; Proceed with normal type inference
+              (when is-named
+                (check-binding-name env expr 2 "variable"))
               (env-push-scope env)
               (env-bind-var env arena-name (env-get-arena-type env))
               (let ((mut result-type (Ptr ResolvedType) (env-get-unit-type env)))

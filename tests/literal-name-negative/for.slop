@@ -1,0 +1,8 @@
+(module main
+  (@intent "A for variable named like a literal is an error (#354)")
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (do (for (unit 0 3) (do))
+        0)))

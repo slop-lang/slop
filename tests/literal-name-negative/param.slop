@@ -1,0 +1,12 @@
+(module main
+  (@intent "A parameter named like a literal is an error, not a binding that no read reaches (#354)")
+
+  (fn pick ((unit Bool) (n Int))
+    (@intent "n when unit holds, else 0")
+    (@spec ((Bool Int) -> Int))
+    (if unit n 0))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (pick true 5)))

@@ -1,0 +1,22 @@
+(module main
+  (@intent "Multi-module: true and false in a payload are literal patterns, and a read of either in the arm is the literal (#354)")
+  (import helper (one))
+
+  (type Pair (union (two Bool Int) (single Int)))
+
+  (fn second ((p Pair))
+    (@intent "n for (two true n), -n for (two false n), 0 for single")
+    (@spec ((Pair) -> Int))
+    (match p
+      ((two true n) (if true n 0))
+      ((two false n) (if false 0 (- 0 n)))
+      ((single _) 0)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (if (and (== (second (union-new Pair two true 7)) 7)
+             (== (second (union-new Pair two false 7)) -7)
+             (== (second (union-new Pair single (one))) 0))
+      0
+      1)))

@@ -22,7 +22,7 @@
                  resolved-type-is-pointer
                  fn-signature-new param-info-new
                  range-bounds-new range-expr-has-dots range-expr-problem int-range-expr-bounds
-                 resolved-type-with-range))
+                 resolved-type-with-range is-literal-name literal-name-message))
   (import type-env (TypeEnv env-arena env-register-type env-lookup-type env-lookup-own-type env-lookup-type-builtin
                env-register-function env-register-constant env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
@@ -135,7 +135,7 @@
                 (match (deref name-expr)
                   ((sym sym)
                     (let ((type-name (. sym name)))
-                      (when (is-reserved-builtin-name type-name)
+                      (when (or (is-literal-name type-name) (is-reserved-builtin-name type-name))
                         (report-reserved-name env type-name "type"
                           (sexpr-line name-expr) (sexpr-col name-expr)))
                       (match (list-get items 2)
@@ -995,6 +995,9 @@
           ((some name-expr)
             (let ((const-name (sexpr-get-symbol-name name-expr)))
               (when (not (string-eq const-name ""))
+                (when (is-literal-name const-name)
+                  (report-reserved-name env const-name "constant"
+                    (sexpr-line name-expr) (sexpr-col name-expr)))
                 ;; Get type at position 2
                 (match (sexpr-list-get const-form 2)
                   ((some type-expr)
@@ -1091,7 +1094,7 @@
                     (match (sexpr-list-get item 2)
                       ((some name-expr)
                         (let ((struct-name (sexpr-get-symbol-name name-expr)))
-                          (when (is-reserved-builtin-name struct-name)
+                          (when (or (is-literal-name struct-name) (is-reserved-builtin-name struct-name))
                             (report-reserved-name env struct-name "foreign struct"
                               (sexpr-line name-expr) (sexpr-col name-expr)))))
                       ((none) (do))))
@@ -1149,7 +1152,7 @@
                       ;; needs the same refusal the (fn ...) path gets -- otherwise
                       ;; it is the one remaining way to make the checker and the
                       ;; transpiler disagree about one of these names.
-                      (when (is-reserved-builtin-name fn-name)
+                      (when (or (is-literal-name fn-name) (is-reserved-builtin-name fn-name))
                         (report-reserved-name env fn-name "foreign function"
                           (sexpr-line func-decl) (sexpr-col func-decl)))
                       (env-register-function env sig)))))
@@ -1257,7 +1260,7 @@
                   ;; Validate main function parameters
                   (when (string-eq fn-name "main")
                     (validate-main-params env fn-form concrete-params))
-                  (when (is-reserved-builtin-name fn-name)
+                  (when (or (is-literal-name fn-name) (is-reserved-builtin-name fn-name))
                     (report-reserved-name env fn-name "function"
                       (sexpr-line fn-form) (sexpr-col fn-form)))
                   (env-register-function env sig)))))
@@ -1407,15 +1410,17 @@
 
   (fn report-reserved-name ((env (Ptr TypeEnv)) (name String) (what String)
                             (line Int) (col Int))
-    (@intent "Report that a definition collides with a builtin of the same name")
+    (@intent "Report that a definition collides with a builtin or a literal of the same name")
     (@spec (((Ptr TypeEnv) String String Int Int) -> Unit))
     (@pre (!= env nil))
     (let ((arena (env-arena env))
-          (msg (string-concat arena "'"
-                 (string-concat arena name
-                   (string-concat arena "' is a builtin and cannot be redefined as a "
-                     (string-concat arena what
-                       " - rename it"))))))
+          (msg (if (is-literal-name name)
+                 (literal-name-message arena name what)
+                 (string-concat arena "'"
+                   (string-concat arena name
+                     (string-concat arena "' is a builtin and cannot be redefined as a "
+                       (string-concat arena what
+                         " - rename it")))))))
       (env-add-error env msg line col)))
 
   (fn is-integer-type-name ((name String))

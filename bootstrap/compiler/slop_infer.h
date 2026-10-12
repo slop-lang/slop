@@ -163,6 +163,7 @@ void infer_check_spec_body_return(type_env_TypeEnv* env, types_SExpr* spec_body,
 uint8_t infer_checker_is_primitive_type(slop_string name);
 uint8_t infer_is_integer_type(slop_string name);
 void infer_check_return_expr(type_env_TypeEnv* env, types_SExpr* ret_expr, slop_string fn_name, types_ResolvedType* inferred_type, int64_t fn_line, int64_t fn_col);
+void infer_check_binding_name(type_env_TypeEnv* env, types_SExpr* form, int64_t idx, slop_string what);
 void infer_bind_param_from_form(type_env_TypeEnv* env, types_SExpr* param_form);
 types_ResolvedType* infer_get_param_type_from_form(type_env_TypeEnv* env, types_SExpr* param_form);
 types_ResolvedType* infer_resolve_complex_type_expr(type_env_TypeEnv* env, types_SExpr* type_expr);

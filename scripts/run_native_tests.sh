@@ -932,6 +932,48 @@ union_type_ctor|union_type_ctor.slop:8:22: error: 'Node' is a union; construct i
 union_not_variant|union_not_variant.slop:9:18: error: 'circle' is not a variant of 'Node'
 MFM_CASES
 
+# A binding or definition named like a literal (true, false, nil, none, unit)
+# was accepted, and every read of it compiled to the literal (#354). Each is
+# reported at the name by check and by build.
+LNN="$REPO_ROOT/tests/literal-name-negative"
+while IFS='|' read -r ln_name ln_expected <&3; do
+    run_negative_check_test "$LNN/$ln_name.slop" "literal-name-check-$ln_name" "$ln_expected"
+    run_negative_build_test "$LNN/$ln_name.slop" "literal-name-build-$ln_name" "$ln_expected"
+done 3<<'LN_CASES'
+param|param.slop:4:14: error: 'unit' is a literal and cannot name a parameter
+mut_param|mut_param.slop:4:18: error: 'none' is a literal and cannot name a parameter
+lambda_param|lambda_param.slop:7:20: error: 'false' is a literal and cannot name a parameter
+let|let.slop:7:12: error: 'unit' is a literal and cannot name a variable
+let_mut|let_mut.slop:7:16: error: 'nil' is a literal and cannot name a variable
+for|for.slop:7:15: error: 'unit' is a literal and cannot name a variable
+for_each|for_each.slop:7:20: error: 'none' is a literal and cannot name a variable
+for_each_entries|for_each_entries.slop:7:23: error: 'nil' is a literal and cannot name a variable
+match_payload|match_payload.slop:12:13: error: 'unit' is a literal and cannot name a variable
+with_arena|with_arena.slop:7:21: error: 'unit' is a literal and cannot name a variable
+const|const.slop:4:10: error: 'none' is a literal and cannot name a constant
+fn_name|fn_name.slop:4:3: error: 'nil' is a literal and cannot name a function
+type_name|type_name.slop:4:9: error: 'unit' is a literal and cannot name a type
+ffi_fn|ffi_fn.slop:4:19: error: 'true' is a literal and cannot name a foreign function
+ffi_struct|ffi_struct.slop:4:25: error: 'false' is a literal and cannot name a foreign struct
+LN_CASES
+
+# The same names read in a multi-module build, where the checker's diagnostics
+# are dropped (#93), so the transpiler reports each read itself.
+LNM="$REPO_ROOT/tests/literal-name-negative-mm"
+while IFS='|' read -r lm_name lm_expected <&3; do
+    run_negative_build_test "$LNM/$lm_name.slop" "literal-name-mm-$lm_name" "$lm_expected" -I "$LNM"
+done 3<<'LNM_CASES'
+param|param.slop:8:9: error: 'unit' is a literal and cannot name a parameter
+let|let.slop:9:11: error: 'true' is a literal and cannot name a variable
+const|const.slop:10:8: error: 'none' is a literal and cannot name a constant
+LNM_CASES
+
+# true and false in a payload are still literal patterns, not bindings, and a
+# read of either in the arm is the literal, in a multi-module build too
+LPM="$REPO_ROOT/tests/literal-pattern-mm"
+run_check_clean_test "$LPM/main.slop" "literal-pattern-mm" -I "$LPM"
+run_lib_test "$LPM/main.slop" "literal-pattern-mm" -I "$LPM"
+
 # Built with SLOP_DEBUG, so contracts are compiled in and checked at run time.
 run_debug_contract_test() {
     local test_file="$1"

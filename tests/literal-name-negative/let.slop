@@ -1,0 +1,8 @@
+(module main
+  (@intent "A let binding named like a literal is an error: each read of it was the literal (#354)")
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((unit (> 2 1)))
+      (if (and unit true) 0 1))))
