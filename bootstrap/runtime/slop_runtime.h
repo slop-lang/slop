@@ -1084,6 +1084,17 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
  * others: were it extended in place, another header with spare capacity would
  * still write into the grown copy's elements. The old buffer stays in the
  * arena, so any copy of the old header still reads it. */
+/* Never inlined under gcc. It is the slow path of every list-push, and gcc
+ * -O2 inlines it at each push site without sharing the copies' stack slots,
+ * so a function with many pushes carries one copy per site in its frame: a
+ * recursive SLOP function's frame grew several times over (snarl's shape
+ * evaluator: 5.4 KB to 28.8 KB, overflowing an 8 MB stack at a third of the
+ * recursion depth). clang keeps those frames small, and inlining the call is
+ * slightly faster there, so it is left to inline. clang defines __GNUC__ too,
+ * hence the second test. */
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline))
+#endif
 static inline void* slop_list_grow_raw(slop_arena* arena, void* data, size_t* cap,
                                        size_t len, size_t elem_size) {
     if (arena == NULL) {
