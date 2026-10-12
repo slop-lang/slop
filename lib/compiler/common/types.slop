@@ -36,7 +36,9 @@
     resolved-type-to-slop-string
     ;; Mutability
     BindingOrigin MutationKind mutation-error-message param-mode-error-message
-    if-operand-count-message union-type-constructor-message comparison-operand-count-message)
+    if-operand-count-message union-type-constructor-message comparison-operand-count-message
+    ;; Literal names (#354)
+    is-literal-name literal-name-message)
 
   (import strlib (string-build))
 
@@ -1029,4 +1031,31 @@
       (else
         (string-build arena (list String "unknown parameter mode '" mode
                                          "' - write (name Type) or (mut name Type)")))))
+
+  ;; ============================================================
+  ;; Literal names
+  ;;
+  ;; Both compilers read these names as their literal before they look up a
+  ;; variable, constant or function, so a definition of one was never read:
+  ;; every use compiled to the literal (#354). Both compilers report them,
+  ;; for the same reason as mutability (#93).
+  ;; ============================================================
+
+  (fn is-literal-name ((name String))
+    (@intent "Is name one of the literals, which nothing can be named?")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("unit") -> true)
+    (@example ("nil") -> true)
+    (@example ("units") -> false)
+    (or (string-eq name "true")
+        (string-eq name "false")
+        (string-eq name "nil")
+        (string-eq name "none")
+        (string-eq name "unit")))
+
+  (fn literal-name-message ((arena Arena) (name String) (what String))
+    (@intent "Explain that a literal cannot name a definition or a binding")
+    (@spec ((Arena String String) -> String))
+    (string-build arena (list String "'" name "' is a literal and cannot name a " what " - rename it")))
 )

@@ -435,7 +435,18 @@ slop_string expr_transpile_literal(context_TranspileContext* ctx, types_SExpr* e
         case types_SExpr_sym:
         {
             __auto_type sym = _mv_226.data.sym;
-            return expr_transpile_symbol(ctx, sym.name);
+            {
+                __auto_type name = sym.name;
+                if (types_is_literal_name(name)) {
+                    {
+                        __auto_type what = ({ __auto_type _mv = context_ctx_lookup_var(ctx, name); _mv.has_value ? ({ __auto_type entry = _mv.value; ({ __auto_type _mv = entry.origin; int _mi = (_mv == types_BindingOrigin_origin_const) ? 1 : (_mv == types_BindingOrigin_origin_param) ? 2 : 3; _mi == 1 ? (SLOP_STR("constant")) : _mi == 2 ? (SLOP_STR("parameter")) : (SLOP_STR("variable")); }); }) : (({ __auto_type _mv = context_ctx_lookup_func(ctx, name); _mv.has_value ? ({ __auto_type _ = _mv.value; SLOP_STR("function"); }) : (SLOP_STR("")); })); });
+                        if (!(string_eq(what, SLOP_STR("")))) {
+                            context_ctx_add_error_at(ctx, types_literal_name_message((*ctx).arena, name, what), context_ctx_sexpr_line(expr), context_ctx_sexpr_col(expr));
+                        }
+                    }
+                }
+                return expr_transpile_symbol(ctx, name);
+            }
         }
         case types_SExpr_lst:
         {
@@ -546,7 +557,7 @@ slop_string expr_transpile_symbol(context_TranspileContext* ctx, slop_string nam
         } else if (strlib_starts_with(name, SLOP_STR("'"))) {
             {
                 __auto_type name_len = string_len(name);
-                __auto_type variant_name = strlib_substring(arena, name, 1, ((int64_t)(SLOP_RANGE(int64_t, (name_len - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:302:72"))));
+                __auto_type variant_name = strlib_substring(arena, name, 1, ((int64_t)(SLOP_RANGE(int64_t, (name_len - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:320:72"))));
                 __auto_type _mv_231 = context_ctx_lookup_enum_variant(ctx, variant_name);
                 if (_mv_231.has_value) {
                     __auto_type enum_name = _mv_231.value;
@@ -562,8 +573,8 @@ slop_string expr_transpile_symbol(context_TranspileContext* ctx, slop_string nam
                 __auto_type dot_pos = _mv_232.value;
                 {
                     __auto_type base_name = strlib_substring(arena, name, 0, dot_pos);
-                    __auto_type rest_len = ((int64_t)(SLOP_RANGE(int64_t, (string_len(name) - (dot_pos + 1)), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:315:48")));
-                    __auto_type rest_name = strlib_substring(arena, name, (dot_pos + 1), SLOP_RANGE(int64_t, rest_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:316:68"));
+                    __auto_type rest_len = ((int64_t)(SLOP_RANGE(int64_t, (string_len(name) - (dot_pos + 1)), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:333:48")));
+                    __auto_type rest_name = strlib_substring(arena, name, (dot_pos + 1), SLOP_RANGE(int64_t, rest_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:334:68"));
                     __auto_type c_rest = ctype_to_c_name(arena, rest_name);
                     __auto_type _mv_233 = context_ctx_lookup_var(ctx, base_name);
                     if (_mv_233.has_value) {
@@ -633,7 +644,7 @@ slop_option_string expr_quoted_variant_name(slop_arena* arena, types_SExpr* expr
             {
                 __auto_type name = sym.name;
                 if (strlib_starts_with(name, SLOP_STR("'")) && (string_len(name) > 1)) {
-                    return (slop_option_string){.has_value = 1, .value = strlib_substring(arena, name, 1, ((int64_t)(SLOP_RANGE(int64_t, (string_len(name) - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:371:60"))))};
+                    return (slop_option_string){.has_value = 1, .value = strlib_substring(arena, name, 1, ((int64_t)(SLOP_RANGE(int64_t, (string_len(name) - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:389:60"))))};
                 } else {
                     return (slop_option_string){.has_value = false};
                 }
@@ -707,7 +718,7 @@ slop_string expr_field_slop_type(context_TranspileContext* ctx, types_SExpr* tar
     {
         __auto_type arena = (*ctx).arena;
         __auto_type t = expr_infer_expr_slop_type(ctx, target_expr);
-        __auto_type rec = (((strlib_starts_with(t, SLOP_STR("(Ptr ")) && strlib_ends_with(t, SLOP_STR(")")))) ? strlib_substring(arena, t, 5, SLOP_RANGE(int64_t, (((int64_t)(string_len(t))) - 6), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:411:39")) : t);
+        __auto_type rec = (((strlib_starts_with(t, SLOP_STR("(Ptr ")) && strlib_ends_with(t, SLOP_STR(")")))) ? strlib_substring(arena, t, 5, SLOP_RANGE(int64_t, (((int64_t)(string_len(t))) - 6), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:429:39")) : t);
         if (string_len(rec) == 0) {
             return SLOP_STR("");
         } else {
@@ -1353,7 +1364,7 @@ types_SExpr* expr_parse_type_string(slop_arena* arena, slop_string s) {
                 return NULL;
             } else {
                 {
-                    __auto_type inner = strlib_substring(arena, s, 1, SLOP_RANGE(int64_t, ((0) > ((len - 2)) ? (0) : ((len - 2))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:946:47"));
+                    __auto_type inner = strlib_substring(arena, s, 1, SLOP_RANGE(int64_t, ((0) > ((len - 2)) ? (0) : ((len - 2))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:964:47"));
                     __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
                     uint8_t failed = 0;
                     int64_t i = 0;
@@ -1416,7 +1427,7 @@ uint8_t expr_type_form_is_wrapped(slop_string s) {
         int64_t i = 0;
         while (i < len) {
             {
-                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:992:46"))));
+                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1010:46"))));
                 if (c == 40) {
                     depth = (depth + 1);
                 } else if (c == 41) {
@@ -1445,14 +1456,14 @@ slop_list_string expr_split_top_level_types(slop_arena* arena, slop_string s) {
         int64_t i = 0;
         while (i <= len) {
             {
-                __auto_type c = (((i < len)) ? strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1014:60")))) : 32);
+                __auto_type c = (((i < len)) ? strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1032:60")))) : 32);
                 if (c == 40) {
                     paren_depth = (paren_depth + 1);
                 } else if (c == 41) {
                     paren_depth = (paren_depth - 1);
                 } else if ((c == 32) && (paren_depth == 0)) {
                     if (token_start < i) {
-                        ({ __auto_type _lst_p = &(out); __auto_type _item = (strlib_substring(arena, s, ((int64_t)(SLOP_RANGE(int64_t, token_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1021:70"))), ((int64_t)(SLOP_RANGE(int64_t, (i - token_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1021:100"))))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                        ({ __auto_type _lst_p = &(out); __auto_type _item = (strlib_substring(arena, s, ((int64_t)(SLOP_RANGE(int64_t, token_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1039:70"))), ((int64_t)(SLOP_RANGE(int64_t, (i - token_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1039:100"))))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     }
                     token_start = (i + 1);
                 } else {
@@ -1472,7 +1483,7 @@ uint8_t expr_type_token_is_number(slop_string s) {
         int64_t i = 0;
         while (i < len) {
             {
-                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1035:46"))));
+                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1053:46"))));
                 if ((c >= 48) && (c <= 57)) {
                     digits = (digits + 1);
                 } else if ((i == 0) && (c == 45)) {
@@ -1494,7 +1505,7 @@ int64_t expr_type_token_to_int(slop_string s) {
         int64_t i = 0;
         while (i < len) {
             {
-                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1051:46"))));
+                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1069:46"))));
                 if ((c >= 48) && (c <= 57)) {
                     value = ((value * 10) + (c - 48));
                 }
@@ -1515,7 +1526,7 @@ slop_string expr_get_base_function_name(slop_arena* arena, slop_string fn_name) 
         int64_t dot_pos = -1;
         int64_t i = 0;
         while (i < len) {
-            if (strlib_char_at(fn_name, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1067:50")))) == 46) {
+            if (strlib_char_at(fn_name, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1085:50")))) == 46) {
                 dot_pos = i;
             } else {
             }
@@ -1527,7 +1538,7 @@ slop_string expr_get_base_function_name(slop_arena* arena, slop_string fn_name) 
             {
                 __auto_type start = (dot_pos + 1);
                 __auto_type sublen = (len - start);
-                return strlib_substring(arena, fn_name, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1077:53"))), ((int64_t)(SLOP_RANGE(int64_t, sublen, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1077:77"))));
+                return strlib_substring(arena, fn_name, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1095:53"))), ((int64_t)(SLOP_RANGE(int64_t, sublen, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1095:77"))));
             }
         }
     }
@@ -1539,7 +1550,7 @@ slop_string expr_get_module_from_qualified_name(slop_arena* arena, slop_string f
         int64_t dot_pos = -1;
         int64_t i = 0;
         while (i < len) {
-            if (strlib_char_at(fn_name, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1087:50")))) == 46) {
+            if (strlib_char_at(fn_name, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1105:50")))) == 46) {
                 dot_pos = i;
             } else {
             }
@@ -1548,7 +1559,7 @@ slop_string expr_get_module_from_qualified_name(slop_arena* arena, slop_string f
         if (dot_pos < 0) {
             return SLOP_STR("");
         } else {
-            return strlib_substring(arena, fn_name, 0, ((int64_t)(SLOP_RANGE(int64_t, dot_pos, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1095:53"))));
+            return strlib_substring(arena, fn_name, 0, ((int64_t)(SLOP_RANGE(int64_t, dot_pos, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1113:53"))));
         }
     }
 }
@@ -2036,7 +2047,7 @@ slop_string expr_strip_pointer_suffix(slop_arena* arena, slop_string s) {
         if (len < 1) {
             return SLOP_STR("");
         } else {
-            return strlib_substring(arena, s, ((int64_t)(0)), ((int64_t)(SLOP_RANGE(int64_t, (len - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1453:65"))));
+            return strlib_substring(arena, s, ((int64_t)(0)), ((int64_t)(SLOP_RANGE(int64_t, (len - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1471:65"))));
         }
     }
 }
@@ -2051,7 +2062,7 @@ slop_string expr_extract_chan_elem_type(context_TranspileContext* ctx, slop_stri
             if (len <= prefix_len) {
                 return SLOP_STR("int64_t");
             } else {
-                return strlib_substring(arena, chan_type, ((int64_t)(SLOP_RANGE(int64_t, prefix_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1464:55"))), ((int64_t)(SLOP_RANGE(int64_t, len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1464:84"))));
+                return strlib_substring(arena, chan_type, ((int64_t)(SLOP_RANGE(int64_t, prefix_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1482:55"))), ((int64_t)(SLOP_RANGE(int64_t, len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1482:84"))));
             }
         }
     }
@@ -2223,7 +2234,7 @@ slop_string expr_prefix_list_element_type(context_TranspileContext* ctx, slop_st
         __auto_type arena = (*ctx).arena;
         if (strlib_ends_with(elem_type, SLOP_STR("_ptr"))) {
             {
-                __auto_type base = strlib_substring(arena, elem_type, 0, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(elem_type))) - 4)) ? (0) : ((((int64_t)(string_len(elem_type))) - 4))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1573:50"));
+                __auto_type base = strlib_substring(arena, elem_type, 0, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(elem_type))) - 4)) ? (0) : ((((int64_t)(string_len(elem_type))) - 4))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1591:50"));
                 __auto_type _mv_298 = context_ctx_lookup_type(ctx, base);
                 if (_mv_298.has_value) {
                     __auto_type entry = _mv_298.value;
@@ -2254,9 +2265,9 @@ slop_string expr_substring_after_prefix(slop_arena* arena, slop_string s, slop_s
             return SLOP_STR("");
         } else {
             {
-                __auto_type start = ((int64_t)(SLOP_RANGE(int64_t, prefix_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1592:39")));
-                __auto_type len = ((int64_t)(SLOP_RANGE(int64_t, (s_len - prefix_len), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1593:37")));
-                return strlib_substring(arena, s, SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1594:30"), SLOP_RANGE(int64_t, len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1594:36"));
+                __auto_type start = ((int64_t)(SLOP_RANGE(int64_t, prefix_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1610:39")));
+                __auto_type len = ((int64_t)(SLOP_RANGE(int64_t, (s_len - prefix_len), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1611:37")));
+                return strlib_substring(arena, s, SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1612:30"), SLOP_RANGE(int64_t, len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1612:36"));
             }
         }
     }
@@ -2281,7 +2292,7 @@ slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string
                         __auto_type end_idx = (len - 1);
                         while ((i < end_idx) && !(found_key)) {
                             {
-                                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1624:62"))));
+                                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1642:62"))));
                                 if (c == 40) {
                                     nesting = (nesting + 1);
                                 } else if (c == 41) {
@@ -2301,7 +2312,7 @@ slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string
                                 __auto_type value_start = (key_space + 1);
                                 __auto_type value_len = (end_idx - value_start);
                                 if (value_len > 0) {
-                                    return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, value_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1638:65"))), ((int64_t)(SLOP_RANGE(int64_t, value_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1638:95"))));
+                                    return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, value_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1656:65"))), ((int64_t)(SLOP_RANGE(int64_t, value_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1656:95"))));
                                 } else {
                                     return SLOP_STR("");
                                 }
@@ -2329,7 +2340,7 @@ slop_string expr_slop_value_type_to_c_type(context_TranspileContext* ctx, slop_s
         } else if (strlib_starts_with(slop_type, SLOP_STR("(Ptr "))) {
             {
                 __auto_type inner_len = ((0) > ((((int64_t)(string_len(slop_type))) - 6)) ? (0) : ((((int64_t)(string_len(slop_type))) - 6)));
-                __auto_type inner_type = strlib_substring(arena, slop_type, 5, ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1655:75"))));
+                __auto_type inner_type = strlib_substring(arena, slop_type, 5, ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1673:75"))));
                 __auto_type inner_c = expr_slop_value_type_to_c_type(ctx, inner_type);
                 return string_concat(arena, inner_c, SLOP_STR("*"));
             }
@@ -2390,7 +2401,7 @@ slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string r
                         __auto_type end_idx = (len - 1);
                         while ((i < end_idx) && !(found_key)) {
                             {
-                                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1704:62"))));
+                                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1722:62"))));
                                 if (c == 40) {
                                     nesting = (nesting + 1);
                                 } else if (c == 41) {
@@ -2410,7 +2421,7 @@ slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string r
                                 __auto_type key_start = 5;
                                 __auto_type key_len = (key_space - key_start);
                                 if (key_len > 0) {
-                                    return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, key_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1719:65"))), ((int64_t)(SLOP_RANGE(int64_t, key_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1719:93"))));
+                                    return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, key_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1737:65"))), ((int64_t)(SLOP_RANGE(int64_t, key_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1737:93"))));
                                 } else {
                                     return SLOP_STR("");
                                 }
@@ -2511,7 +2522,7 @@ slop_string expr_infer_expr_slop_type(context_TranspileContext* ctx, types_SExpr
                                                                 __auto_type field_name = field_sym.name;
                                                                 {
                                                                     __auto_type obj_c_type_raw = expr_infer_expr_c_type(ctx, obj_expr);
-                                                                    __auto_type obj_c_type = ((strlib_ends_with(obj_c_type_raw, SLOP_STR("*"))) ? strlib_substring(arena, obj_c_type_raw, 0, SLOP_RANGE(int64_t, (obj_c_type_raw.len - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1786:97")) : obj_c_type_raw);
+                                                                    __auto_type obj_c_type = ((strlib_ends_with(obj_c_type_raw, SLOP_STR("*"))) ? strlib_substring(arena, obj_c_type_raw, 0, SLOP_RANGE(int64_t, (obj_c_type_raw.len - 1), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1804:97")) : obj_c_type_raw);
                                                                     __auto_type _mv_311 = context_ctx_lookup_field_slop_type(ctx, obj_c_type, field_name);
                                                                     if (_mv_311.has_value) {
                                                                         __auto_type slop_type = _mv_311.value;
@@ -2519,7 +2530,7 @@ slop_string expr_infer_expr_slop_type(context_TranspileContext* ctx, types_SExpr
                                                                     } else if (!_mv_311.has_value) {
                                                                         {
                                                                             __auto_type obj_slop_type_raw = expr_infer_expr_slop_type(ctx, obj_expr);
-                                                                            __auto_type obj_slop_type = ((strlib_starts_with(obj_slop_type_raw, SLOP_STR("(Ptr "))) ? strlib_substring(arena, obj_slop_type_raw, 5, SLOP_RANGE(int64_t, (obj_slop_type_raw.len - 6), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1794:109")) : obj_slop_type_raw);
+                                                                            __auto_type obj_slop_type = ((strlib_starts_with(obj_slop_type_raw, SLOP_STR("(Ptr "))) ? strlib_substring(arena, obj_slop_type_raw, 5, SLOP_RANGE(int64_t, (obj_slop_type_raw.len - 6), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1812:109")) : obj_slop_type_raw);
                                                                             __auto_type _mv_312 = context_ctx_lookup_field_slop_type_for_slop(ctx, obj_slop_type, field_name);
                                                                             if (_mv_312.has_value) {
                                                                                 __auto_type slop_type2 = _mv_312.value;
@@ -2553,7 +2564,7 @@ slop_string expr_infer_expr_slop_type(context_TranspileContext* ctx, types_SExpr
                                                 {
                                                     __auto_type ptr_type = expr_resolve_type_alias(ctx, expr_infer_expr_slop_type(ctx, ptr_expr));
                                                     if (strlib_starts_with(ptr_type, SLOP_STR("(Ptr "))) {
-                                                        return strlib_substring(arena, ptr_type, 5, SLOP_RANGE(int64_t, (ptr_type.len - 6), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1809:65"));
+                                                        return strlib_substring(arena, ptr_type, 5, SLOP_RANGE(int64_t, (ptr_type.len - 6), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1827:65"));
                                                     } else {
                                                         return SLOP_STR("");
                                                     }
@@ -2837,7 +2848,7 @@ slop_string expr_extract_list_elem_from_inferred(context_TranspileContext* ctx, 
                 {
                     __auto_type elem_len = ((string_len(inferred_slop_type) - 6) - 1);
                     if (elem_len > 0) {
-                        return strlib_substring(arena, inferred_slop_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1977:70"))));
+                        return strlib_substring(arena, inferred_slop_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1995:70"))));
                     } else {
                         return SLOP_STR("");
                     }
@@ -2923,7 +2934,7 @@ slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string 
                         __auto_type elem_start = 5;
                         __auto_type elem_len = ((len - 1) - elem_start);
                         if (elem_len > 0) {
-                            return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, elem_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2046:61"))), ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2046:90"))));
+                            return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, elem_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2064:61"))), ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2064:90"))));
                         } else {
                             return SLOP_STR("");
                         }
@@ -3009,7 +3020,7 @@ slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_ty
                     __auto_type inner_len = ((len - 1) - inner_start);
                     if (inner_len > 0) {
                         {
-                            __auto_type inner = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2104:74"))), ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2104:104"))));
+                            __auto_type inner = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2122:74"))), ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2122:104"))));
                             return string_concat(arena, SLOP_STR("list_"), expr_slop_value_type_to_option_id(arena, inner));
                         }
                     } else {
@@ -3029,7 +3040,7 @@ slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_ty
                     __auto_type inner_len = ((len - 1) - inner_start);
                     if (inner_len > 0) {
                         {
-                            __auto_type inner = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2115:74"))), ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2115:104"))));
+                            __auto_type inner = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2133:74"))), ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2133:104"))));
                             return string_concat(arena, SLOP_STR("option_"), expr_slop_value_type_to_option_id(arena, inner));
                         }
                     } else {
@@ -3049,7 +3060,7 @@ slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_ty
                     __auto_type inner_len = ((len - 1) - inner_start);
                     if (inner_len > 0) {
                         {
-                            __auto_type inner = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2126:74"))), ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2126:104"))));
+                            __auto_type inner = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2144:74"))), ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2144:104"))));
                             return string_concat(arena, expr_slop_value_type_to_option_id(arena, inner), SLOP_STR("_ptr"));
                         }
                     } else {
@@ -3175,7 +3186,7 @@ slop_string expr_option_type_to_value_c_type(slop_arena* arena, slop_string opti
             } else if (strlib_ends_with(extracted, SLOP_STR("_ptr"))) {
                 {
                     __auto_type base_len = (((int64_t)(string_len(extracted))) - 4);
-                    return string_concat(arena, strlib_substring(arena, extracted, 0, ((int64_t)(SLOP_RANGE(int64_t, base_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2232:84")))), SLOP_STR("*"));
+                    return string_concat(arena, strlib_substring(arena, extracted, 0, ((int64_t)(SLOP_RANGE(int64_t, base_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2250:84")))), SLOP_STR("*"));
                 }
             } else {
                 return extracted;
@@ -3202,7 +3213,7 @@ slop_string expr_infer_option_inner_slop_type(context_TranspileContext* ctx, typ
                             {
                                 __auto_type inner_len = ((((int64_t)(len)) - 8) - 1);
                                 if (inner_len > 0) {
-                                    return strlib_substring(arena, resolved, 8, ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2252:66"))));
+                                    return strlib_substring(arena, resolved, 8, ((int64_t)(SLOP_RANGE(int64_t, inner_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2270:66"))));
                                 } else {
                                     return SLOP_STR("");
                                 }
@@ -3302,7 +3313,7 @@ slop_string expr_infer_option_inner_slop_type(context_TranspileContext* ctx, typ
                                                                                         {
                                                                                             __auto_type elem_len = ((string_len(slop_type) - 6) - 1);
                                                                                             if (elem_len > 0) {
-                                                                                                return strlib_substring(arena, slop_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2301:105"))));
+                                                                                                return strlib_substring(arena, slop_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2319:105"))));
                                                                                             } else {
                                                                                                 return SLOP_STR("");
                                                                                             }
@@ -3392,7 +3403,7 @@ slop_option_string expr_extract_option_type(slop_arena* arena, slop_string s) {
             uint8_t found_brace = 0;
             int64_t end_idx = 0;
             while ((i < len) && !(found_brace)) {
-                if (strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2351:47")))) == 123) {
+                if (strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2369:47")))) == 123) {
                     found_brace = 1;
                     end_idx = (i - 2);
                 } else {
@@ -3400,7 +3411,7 @@ slop_option_string expr_extract_option_type(slop_arena* arena, slop_string s) {
                 }
             }
             if (found_brace) {
-                return (slop_option_string){.has_value = 1, .value = strlib_substring(arena, s, 1, ((int64_t)(SLOP_RANGE(int64_t, end_idx, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2357:55"))))};
+                return (slop_option_string){.has_value = 1, .value = strlib_substring(arena, s, 1, ((int64_t)(SLOP_RANGE(int64_t, end_idx, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:2375:55"))))};
             } else {
                 return (slop_option_string){.has_value = false};
             }
@@ -6309,29 +6320,29 @@ slop_string expr_slop_type_to_c_type(context_TranspileContext* ctx, slop_string 
         } else if (!_mv_503.has_value) {
             if (strlib_starts_with(slop_type, SLOP_STR("(Ptr "))) {
                 {
-                    __auto_type inner = strlib_substring(arena, slop_type, 5, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 6)) ? (0) : ((((int64_t)(string_len(slop_type))) - 6))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4820:57"));
+                    __auto_type inner = strlib_substring(arena, slop_type, 5, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 6)) ? (0) : ((((int64_t)(string_len(slop_type))) - 6))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4838:57"));
                     return context_ctx_str(ctx, expr_slop_type_to_c_type(ctx, inner), SLOP_STR("*"));
                 }
             } else if (strlib_starts_with(slop_type, SLOP_STR("(Map ")) || strlib_starts_with(slop_type, SLOP_STR("(Set "))) {
                 return SLOP_STR("slop_map*");
             } else if (strlib_starts_with(slop_type, SLOP_STR("(List "))) {
                 {
-                    __auto_type inner = strlib_substring(arena, slop_type, 6, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 7)) ? (0) : ((((int64_t)(string_len(slop_type))) - 7))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4827:57"));
+                    __auto_type inner = strlib_substring(arena, slop_type, 6, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 7)) ? (0) : ((((int64_t)(string_len(slop_type))) - 7))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4845:57"));
                     return context_ctx_str(ctx, SLOP_STR("slop_list_"), ctype_type_to_identifier(arena, expr_slop_type_to_c_type(ctx, inner)));
                 }
             } else if (strlib_starts_with(slop_type, SLOP_STR("(Option "))) {
                 {
-                    __auto_type inner = strlib_substring(arena, slop_type, 8, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 9)) ? (0) : ((((int64_t)(string_len(slop_type))) - 9))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4831:57"));
+                    __auto_type inner = strlib_substring(arena, slop_type, 8, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 9)) ? (0) : ((((int64_t)(string_len(slop_type))) - 9))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4849:57"));
                     return context_ctx_str(ctx, SLOP_STR("slop_option_"), ctype_type_to_identifier(arena, expr_slop_type_to_c_type(ctx, inner)));
                 }
             } else if (strlib_starts_with(slop_type, SLOP_STR("(Chan "))) {
                 {
-                    __auto_type inner = strlib_substring(arena, slop_type, 6, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 7)) ? (0) : ((((int64_t)(string_len(slop_type))) - 7))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4835:57"));
+                    __auto_type inner = strlib_substring(arena, slop_type, 6, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 7)) ? (0) : ((((int64_t)(string_len(slop_type))) - 7))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4853:57"));
                     return context_ctx_str(ctx, SLOP_STR("slop_chan_"), ctype_type_to_identifier(arena, expr_slop_type_to_c_type(ctx, inner)));
                 }
             } else if (strlib_starts_with(slop_type, SLOP_STR("(Thread "))) {
                 {
-                    __auto_type inner = strlib_substring(arena, slop_type, 8, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 9)) ? (0) : ((((int64_t)(string_len(slop_type))) - 9))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4839:57"));
+                    __auto_type inner = strlib_substring(arena, slop_type, 8, SLOP_RANGE(int64_t, ((0) > ((((int64_t)(string_len(slop_type))) - 9)) ? (0) : ((((int64_t)(string_len(slop_type))) - 9))), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:4857:57"));
                     return context_ctx_str(ctx, SLOP_STR("slop_thread_"), ctype_type_to_identifier(arena, expr_slop_type_to_c_type(ctx, inner)));
                 }
             } else {
@@ -10139,7 +10150,7 @@ slop_string expr_trim_parens(slop_arena* arena, slop_string s) {
         if (len < 2) {
             return s;
         } else {
-            return strlib_substring(arena, s, ((int64_t)(1)), ((int64_t)(SLOP_RANGE(int64_t, (len - 2), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8077:65"))));
+            return strlib_substring(arena, s, ((int64_t)(1)), ((int64_t)(SLOP_RANGE(int64_t, (len - 2), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8095:65"))));
         }
     }
 }
@@ -10687,7 +10698,7 @@ slop_string expr_extract_type_binding_from_slop_type(slop_arena* arena, slop_str
             __auto_type inner_end = expr_find_matching_paren(slop_type, inner_start);
             if (inner_end > inner_start) {
                 {
-                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8515:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8516:59"))));
+                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8533:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8534:59"))));
                     return expr_slop_type_to_c_identifier(arena, inner_type);
                 }
             } else {
@@ -10700,7 +10711,7 @@ slop_string expr_extract_type_binding_from_slop_type(slop_arena* arena, slop_str
             __auto_type inner_end = expr_find_matching_paren(slop_type, inner_start);
             if (inner_end > inner_start) {
                 {
-                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8524:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8525:59"))));
+                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8542:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8543:59"))));
                     return expr_slop_type_to_c_identifier(arena, inner_type);
                 }
             } else {
@@ -10719,7 +10730,7 @@ slop_string expr_extract_type_binding_from_c_type(slop_arena* arena, slop_string
             __auto_type end_offset = ((strlib_ends_with(c_type, SLOP_STR("*"))) ? 1 : 0);
             __auto_type len = string_len(c_type);
             if (len > start) {
-                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8542:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8543:40"))));
+                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8560:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8561:40"))));
             } else {
                 return SLOP_STR("int");
             }
@@ -10730,7 +10741,7 @@ slop_string expr_extract_type_binding_from_c_type(slop_arena* arena, slop_string
             __auto_type end_offset = ((strlib_ends_with(c_type, SLOP_STR("*"))) ? 1 : 0);
             __auto_type len = string_len(c_type);
             if (len > start) {
-                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8550:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8551:40"))));
+                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8568:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8569:40"))));
             } else {
                 return SLOP_STR("int");
             }
@@ -10780,7 +10791,7 @@ int64_t expr_find_matching_paren(slop_string s, int64_t start) {
         int64_t found = -1;
         while ((i < len) && (found < 0)) {
             {
-                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8585:46"))));
+                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8603:46"))));
                 if (c == 40) {
                     depth = (depth + 1);
                 } else if (c == 41) {
@@ -11430,7 +11441,7 @@ slop_string expr_extract_first_type_arg(slop_arena* arena, slop_string slop_type
         uint8_t found = 0;
         while ((end_pos < len) && !(found)) {
             {
-                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, end_pos, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9094:54"))));
+                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, end_pos, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9112:54"))));
                 if (c == 40) {
                     depth = (depth + 1);
                     end_pos = (end_pos + 1);
@@ -11449,7 +11460,7 @@ slop_string expr_extract_first_type_arg(slop_arena* arena, slop_string slop_type
             }
         }
         if (end_pos > start) {
-            return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9110:53"))), ((int64_t)(SLOP_RANGE(int64_t, (end_pos - start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9110:77"))));
+            return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9128:53"))), ((int64_t)(SLOP_RANGE(int64_t, (end_pos - start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9128:77"))));
         } else {
             return SLOP_STR("");
         }
@@ -11634,7 +11645,7 @@ slop_string expr_infer_elem_from_type(context_TranspileContext* ctx, types_SExpr
                     {
                         __auto_type elem_len = ((string_len(resolved_type) - 6) - 1);
                         if (elem_len > 0) {
-                            return strlib_substring(arena, resolved_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9228:69"))));
+                            return strlib_substring(arena, resolved_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:9246:69"))));
                         } else {
                             return SLOP_STR("");
                         }

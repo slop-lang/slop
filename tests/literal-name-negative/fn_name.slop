@@ -1,0 +1,12 @@
+(module main
+  (@intent "A function named like a literal is an error (#354)")
+
+  (fn nil ()
+    (@intent "Return 0")
+    (@spec (() -> Int))
+    0)
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (nil)))

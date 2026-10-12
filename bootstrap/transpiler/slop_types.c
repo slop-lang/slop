@@ -53,6 +53,8 @@ slop_string types_if_operand_count_message(slop_arena* arena, int64_t operands);
 slop_string types_comparison_operand_count_message(slop_arena* arena, slop_string op, int64_t operands);
 slop_string types_union_type_constructor_message(slop_arena* arena, slop_string type_name);
 slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name);
+uint8_t types_is_literal_name(slop_string name);
+slop_string types_literal_name_message(slop_arena* arena, slop_string name, slop_string what);
 
 types_RangeBounds types_range_bounds_new(uint8_t has_min, int64_t min_val, uint8_t has_max, int64_t max_val) {
     return (types_RangeBounds){has_min, has_max, min_val, max_val};
@@ -876,5 +878,13 @@ slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, 
     } else {
         return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("unknown parameter mode '"); _ll.data[1] = mode; _ll.data[2] = SLOP_STR("' - write (name Type) or (mut name Type)"); _ll; }));
     }
+}
+
+uint8_t types_is_literal_name(slop_string name) {
+    return ((string_eq(name, SLOP_STR("true"))) || (string_eq(name, SLOP_STR("false"))) || (string_eq(name, SLOP_STR("nil"))) || (string_eq(name, SLOP_STR("none"))) || (string_eq(name, SLOP_STR("unit"))));
+}
+
+slop_string types_literal_name_message(slop_arena* arena, slop_string name, slop_string what) {
+    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' is a literal and cannot name a "); _ll.data[3] = what; _ll.data[4] = SLOP_STR(" - rename it"); _ll; }));
 }
 

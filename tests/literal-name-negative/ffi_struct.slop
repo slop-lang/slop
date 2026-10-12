@@ -1,0 +1,9 @@
+(module main
+  (@intent "A foreign struct named like a literal is an error (#354)")
+
+  (ffi-struct "stdio.h" false (x Int))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    0))

@@ -1,0 +1,13 @@
+(module main
+  (@intent "Multi-module: the transpiler reports a read of a parameter named like a literal (#354)")
+  (import helper (one))
+
+  (fn pick ((unit Bool) (n Int))
+    (@intent "n when unit holds, else 0")
+    (@spec ((Bool Int) -> Int))
+    (if unit n 0))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (pick true (one))))

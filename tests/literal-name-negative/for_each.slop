@@ -1,0 +1,13 @@
+(module main
+  (@intent "A for-each variable named like a literal is an error (#354)")
+
+  (fn walk ((xs (List Int)))
+    (@intent "Visit each element")
+    (@spec (((List Int)) -> Int))
+    (do (for-each (none xs) (do))
+        0))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    0))

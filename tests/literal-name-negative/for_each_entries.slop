@@ -1,0 +1,13 @@
+(module main
+  (@intent "A for-each entry name named like a literal is an error (#354)")
+
+  (fn walk ((m (Map String Int)))
+    (@intent "Visit each entry")
+    (@spec (((Map String Int)) -> Int))
+    (do (for-each ((k nil) m) (do))
+        0))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    0))

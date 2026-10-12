@@ -1,0 +1,10 @@
+(module main
+  (@intent "Multi-module: the transpiler reports a read of a constant named like a literal (#354)")
+  (import helper (one))
+
+  (const none Int 4)
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (+ none (one))))

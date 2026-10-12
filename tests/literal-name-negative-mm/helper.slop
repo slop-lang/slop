@@ -1,0 +1,7 @@
+(module helper
+  (@intent "A module to import, so the build is multi-module and the transpiler's own checks report")
+  (export one)
+  (fn one ()
+    (@intent "One")
+    (@spec (() -> Int))
+    1))

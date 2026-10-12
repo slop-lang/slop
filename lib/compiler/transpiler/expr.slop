@@ -39,7 +39,8 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer resolved-type-to-slop-string
                  BindingOrigin MutationKind mutation-error-message
-                 if-operand-count-message union-type-constructor-message comparison-operand-count-message))
+                 if-operand-count-message union-type-constructor-message comparison-operand-count-message
+                 is-literal-name literal-name-message))
   (import context (TranspileContext ctx-unique-arena-local ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-push-open-arena ctx-pop-open-arena ctx-enter-loop ctx-exit-loop ctx-enter-switch ctx-exit-switch ctx-loop-exit ctx-exit-code ctx-set-capture-retval ctx-is-capture-retval ctx-is-post-exit ctx-post-exit-used ctx-set-post-exit ctx-restore-post-exit ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-set-current-result-type ctx-clear-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
@@ -224,7 +225,24 @@
         ;; Wrap in SLOP_STR macro with escaped string
         (ctx-str3 ctx "SLOP_STR(\"" (escape-c-string ctx (. str value)) "\")"))
       ((sym sym)
-        (transpile-symbol ctx (. sym name)))
+        (let ((name (. sym name)))
+          ;; A variable, constant or function named like a literal is never
+          ;; read: transpile-symbol gives the literal (#354). The checker
+          ;; refuses the definition, but multi-module builds drop its
+          ;; diagnostics (#93), so the read is refused here too
+          (when (is-literal-name name)
+            (let ((what (match (ctx-lookup-var ctx name)
+                          ((some entry) (match (. entry origin)
+                                          ('origin-const "constant")
+                                          ('origin-param "parameter")
+                                          (_ "variable")))
+                          ((none) (match (ctx-lookup-func ctx name)
+                                    ((some _) "function")
+                                    ((none) ""))))))
+              (when (not (string-eq what ""))
+                (ctx-add-error-at ctx (literal-name-message (. (deref ctx) arena) name what)
+                                  (ctx-sexpr-line expr) (ctx-sexpr-col expr)))))
+          (transpile-symbol ctx name)))
       ((lst _)
         "/* error: list is not a literal */")))
 

@@ -1,0 +1,7 @@
+(module main
+  (@intent "A with-arena :as name named like a literal is an error (#354)")
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena :as unit 1024 0)))

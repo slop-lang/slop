@@ -689,9 +689,10 @@ class TestOptionPredicates:
                     [str(REPO_ROOT / "bin" / "slop-compiler"), "check", str(probe)],
                     capture_output=True, text=True,
                 )
-                if "is a builtin and cannot be redefined" not in (
-                    result.stdout + result.stderr
-                ):
+                # none is a literal too, and is refused as one (#354)
+                output = result.stdout + result.stderr
+                if ("is a builtin and cannot be redefined" not in output
+                        and "is a literal and cannot name" not in output):
                     unreserved.append(name)
         assert not unreserved, (
             "dispatched by transpile-list-expr but not reserved: %s" % unreserved

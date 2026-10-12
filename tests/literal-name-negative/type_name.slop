@@ -1,0 +1,9 @@
+(module main
+  (@intent "A type named like a literal is an error (#354)")
+
+  (type unit (record (x Int)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    0))

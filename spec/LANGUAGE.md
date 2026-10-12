@@ -49,7 +49,7 @@ program     = form*
 form        = '(' keyword args ')'
 args        = (form | atom | literal)*
 atom        = identifier | type-name | symbol
-literal     = number | string | 'true | 'false | 'nil
+literal     = number | string | 'true | 'false | 'nil | 'none | 'unit
 ```
 
 ### 3.1 Top-Level Forms
@@ -311,6 +311,9 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 "hello"                  ; String
 'symbol                  ; Symbol (enum value)
 true false nil           ; Boolean and nil
+none unit                ; The empty Option, and the Unit value
+; A literal is reserved: no variable, parameter, constant, function or type
+; can take its name, since every read of the name is the literal
 
 ; Variables and binding
 identifier               ; Variable reference
@@ -1171,6 +1174,8 @@ above together with the syntactic forms (`if`, `let`, `match`, `for-each`,
 `with-arena`, `cast`, `deref`, `quote`, and the rest). Names in an imported
 library - `starts-with`, `substring`, `join`, `spawn` and so on - are ordinary
 functions and are **not** reserved; only what the transpiler lowers itself is.
+The literals `true`, `false`, `nil`, `none` and `unit` are reserved too, and
+for every kind of name, variables and parameters included (§3.6).
 
 ### 8.1 Concurrency (thread library)
 

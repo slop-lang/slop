@@ -1,0 +1,9 @@
+(module main
+  (@intent "A foreign function named like a literal is an error (#354)")
+
+  (ffi "stdlib.h" (true ((n Int)) Int))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    0))

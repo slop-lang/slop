@@ -443,6 +443,8 @@ slop_string types_if_operand_count_message(slop_arena* arena, int64_t operands);
 slop_string types_comparison_operand_count_message(slop_arena* arena, slop_string op, int64_t operands);
 slop_string types_union_type_constructor_message(slop_arena* arena, slop_string type_name);
 slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name);
+uint8_t types_is_literal_name(slop_string name);
+slop_string types_literal_name_message(slop_arena* arena, slop_string name, slop_string what);
 
 #ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
