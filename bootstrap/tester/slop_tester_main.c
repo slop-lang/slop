@@ -102,11 +102,11 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                 int64_t total = 0;
                 int64_t i = 0;
                 while (i < len) {
-                    __auto_type _mv_1785 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_1785.has_value) {
-                        __auto_type line = _mv_1785.value;
+                    __auto_type _mv_1786 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_1786.has_value) {
+                        __auto_type line = _mv_1786.value;
                         total = (total + (((int64_t)(line.len)) + 1));
-                    } else if (!_mv_1785.has_value) {
+                    } else if (!_mv_1786.has_value) {
                     }
                     i = (i + 1);
                 }
@@ -115,9 +115,9 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                     int64_t pos = 0;
                     int64_t j = 0;
                     while (j < len) {
-                        __auto_type _mv_1786 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                        if (_mv_1786.has_value) {
-                            __auto_type line = _mv_1786.value;
+                        __auto_type _mv_1787 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        if (_mv_1787.has_value) {
+                            __auto_type line = _mv_1787.value;
                             {
                                 __auto_type line_len = ((int64_t)(line.len));
                                 __auto_type line_data = line.data;
@@ -130,7 +130,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                                 buf[pos] = 10;
                                 pos = (pos + 1);
                             }
-                        } else if (!_mv_1786.has_value) {
+                        } else if (!_mv_1787.has_value) {
                         }
                         j = (j + 1);
                     }
@@ -162,19 +162,19 @@ slop_list_string tester_main_read_import_files(slop_arena* arena, uint8_t** argv
         __auto_type count = ((int64_t)((files).len));
         int64_t i = 1;
         while (i < count) {
-            __auto_type _mv_1787 = ({ __auto_type _lst = files; size_t _idx = (size_t)i; slop_option_int _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_1787.has_value) {
-                __auto_type idx = _mv_1787.value;
+            __auto_type _mv_1788 = ({ __auto_type _lst = files; size_t _idx = (size_t)i; slop_option_int _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_1788.has_value) {
+                __auto_type idx = _mv_1788.value;
                 {
                     __auto_type path_ptr = ((char*)(argv[idx]));
-                    __auto_type _mv_1788 = tester_main_read_file(arena, path_ptr);
-                    if (_mv_1788.has_value) {
-                        __auto_type source = _mv_1788.value;
+                    __auto_type _mv_1789 = tester_main_read_file(arena, path_ptr);
+                    if (_mv_1789.has_value) {
+                        __auto_type source = _mv_1789.value;
                         ({ __auto_type _lst_p = &(sources); __auto_type _item = (source); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                    } else if (!_mv_1788.has_value) {
+                    } else if (!_mv_1789.has_value) {
                     }
                 }
-            } else if (!_mv_1787.has_value) {
+            } else if (!_mv_1788.has_value) {
             }
             i = (i + 1);
         }
@@ -191,11 +191,11 @@ uint8_t tester_main_collect_args(slop_arena* arena, int64_t argc, uint8_t** argv
                 __auto_type arg = std_strlib_cstring_to_string(argv[i]);
                 if (string_eq(arg, SLOP_STR("--package"))) {
                     if ((i + 1) < argc) {
-                        __auto_type _mv_1789 = ctype_parse_module_package(arena, std_strlib_cstring_to_string(argv[(i + 1)]));
-                        if (_mv_1789.has_value) {
-                            __auto_type entry = _mv_1789.value;
+                        __auto_type _mv_1790 = ctype_parse_module_package(arena, std_strlib_cstring_to_string(argv[(i + 1)]));
+                        if (_mv_1790.has_value) {
+                            __auto_type entry = _mv_1790.value;
                             ({ __auto_type _lst_p = &((*packages)); __auto_type _item = (entry); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                        } else if (!_mv_1789.has_value) {
+                        } else if (!_mv_1790.has_value) {
                             tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"--package expects MODULE=NAME\"}\n").data)));
                             ok = 0;
                         }
@@ -245,19 +245,19 @@ int main(int argc, char** _c_argv) {
                         return _wa_ret;
                     }
                 } else {
-                    __auto_type _mv_1790 = ({ __auto_type _lst = files; size_t _idx = (size_t)0; slop_option_int _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (!_mv_1790.has_value) {
+                    __auto_type _mv_1791 = ({ __auto_type _lst = files; size_t _idx = (size_t)0; slop_option_int _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (!_mv_1791.has_value) {
                         tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester [--package MODULE=NAME ...] <input.slop> [import-files...]\n").data)));
                         {
                             int _wa_ret = 1;
                             slop_arena_free(&_arena_3);
                             return _wa_ret;
                         }
-                    } else if (_mv_1790.has_value) {
-                        __auto_type input_idx = _mv_1790.value;
-                        __auto_type _mv_1791 = tester_main_read_file(arena, ((char*)(argv[input_idx])));
-                        if (_mv_1791.has_value) {
-                            __auto_type source = _mv_1791.value;
+                    } else if (_mv_1791.has_value) {
+                        __auto_type input_idx = _mv_1791.value;
+                        __auto_type _mv_1792 = tester_main_read_file(arena, ((char*)(argv[input_idx])));
+                        if (_mv_1792.has_value) {
+                            __auto_type source = _mv_1792.value;
                             {
                                 __auto_type import_sources = tester_main_read_import_files(arena, argv, files);
                                 __auto_type result = tester_generate_tests_with_imports(arena, source, import_sources, std_strlib_cstring_to_string(argv[input_idx]), packages);
@@ -292,7 +292,7 @@ int main(int argc, char** _c_argv) {
                                     }
                                 }
                             }
-                        } else if (!_mv_1791.has_value) {
+                        } else if (!_mv_1792.has_value) {
                             tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
                             {
                                 int _wa_ret = 1;
