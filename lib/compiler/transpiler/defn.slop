@@ -33,8 +33,9 @@
                    TypeEntry FuncEntry FuncParamType VarEntry
                    to-c-type-prefixed extract-fn-c-name ctx-fail
                    ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
-                   ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type param-slop-type-string))
+                   ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
+                   ctx-type-id))
+  (import ctype (to-c-type to-c-name is-builtin-c-type is-int-type param-slop-type-string))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr resolve-type-alias escape-c-string))
   (import strlib (starts-with ends-with substring replace string-build))
@@ -368,12 +369,7 @@
                       (let ((raw-name (. name-sym name))
                             (base-name (to-c-name arena raw-name))
                             ;; Add module prefix if prefixing is enabled
-                            (qualified-name (if (ctx-prefixing-enabled ctx)
-                                              (match (ctx-get-module ctx)
-                                                ((some mod-name)
-                                                  (ctx-str ctx (to-c-name arena mod-name) (ctx-str ctx "_" base-name)))
-                                                ((none) base-name))
-                                              base-name)))
+                            (qualified-name (ctx-prefix-type ctx base-name)))
                         ;; Get type definition
                         (match (list-get items 2)
                           ((some type-def)
@@ -1493,7 +1489,7 @@
                                 ;; Convert to C types with proper module prefixes
                                 (let ((ok-c-type (to-c-type-prefixed ctx ok-type-expr))
                                       (err-c-type (to-c-type-prefixed ctx err-type-expr))
-                                      (result-name (build-result-name arena ok-c-type err-c-type)))
+                                      (result-name (build-result-name ctx ok-c-type err-c-type)))
                                   (some result-name)))
                               ((none) none)))
                           ((none) none))
@@ -1502,12 +1498,14 @@
                 ((none) none)))))
         (else none))))
 
-  (fn build-result-name ((arena Arena) (ok-type String) (err-type String))
+  (fn build-result-name ((ctx (Ptr TranspileContext)) (ok-type String) (err-type String))
     (@intent "Build the C type name for a Result type")
-    (@spec ((Arena String String) -> String))
-    ;; Use type-to-identifier for consistent naming with ctype.slop
-    (let ((ok-id (type-to-identifier arena ok-type))
-          (err-id (type-to-identifier arena err-type)))
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    ;; Use ctx-type-id for consistent naming with ctype.slop
+    (let ((arena (. (deref ctx) arena))
+          (ok-id (ctx-type-id ctx ok-type))
+          (err-id (ctx-type-id ctx err-type)))
       (string-concat arena
         (string-concat arena
           (string-concat arena "slop_result_" ok-id)

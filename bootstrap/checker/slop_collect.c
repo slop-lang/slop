@@ -948,7 +948,7 @@ void collect_check_range_forms_in(type_env_TypeEnv* env, types_SExpr* expr) {
                 }
             } else {
                 if (collect_is_unchecked_range_base(head) && types_range_expr_has_dots(expr)) {
-                    type_env_env_add_warning(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("a "); _ll.data[1] = head; _ll.data[2] = SLOP_STR(" range is not enforced yet: only (Int lo .. hi) is checked"); _ll; })), line, col);
+                    type_env_env_add_warning(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("a "); _ll.data[1] = head; _ll.data[2] = SLOP_STR(" range is not enforced yet: only (Int lo .. hi) is checked"); _ll; })), line, col);
                 }
                 {
                     __auto_type len = parser_sexpr_list_len(expr);
@@ -1216,7 +1216,7 @@ void collect_collect_single_union_variant(type_env_TypeEnv* env, slop_arena* are
                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR(") or (List ")); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (type_name); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR(") instead")); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                    type_env_env_add_error(env, strlib_string_build(arena, parts), parser_sexpr_line(variant_form), parser_sexpr_col(variant_form));
+                    type_env_env_add_error(env, std_strlib_string_build(arena, parts), parser_sexpr_line(variant_form), parser_sexpr_col(variant_form));
                 }
             }
             if (collect_is_reserved_variant_name(vname)) {
@@ -1369,7 +1369,7 @@ types_ResolvedType* collect_constant_value_type(type_env_TypeEnv* env, slop_aren
                     {
                         __auto_type v = n.int_value;
                         __auto_type exact = types_resolved_type_with_range(arena, declared, (slop_option_types_RangeBounds){.has_value = 1, .value = types_range_bounds_new(1, v, 1, v)});
-                        type_env_env_check_range_narrowing(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("constant '"); _ll.data[1] = const_name; _ll.data[2] = SLOP_STR("'"); _ll; })), declared, exact, parser_sexpr_line(value_expr), parser_sexpr_col(value_expr));
+                        type_env_env_check_range_narrowing(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("constant '"); _ll.data[1] = const_name; _ll.data[2] = SLOP_STR("'"); _ll; })), declared, exact, parser_sexpr_line(value_expr), parser_sexpr_col(value_expr));
                         return exact;
                     }
                 }

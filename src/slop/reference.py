@@ -177,6 +177,12 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
 
 The :c-name attribute specifies a clean C name for external code.
 Transpiler emits both the clean name and a #define alias.
+
+Without :c-name, a function's C name is <module>_<name>, or
+<package>_<module>_<name> when the nearest slop.toml above the file has a
+[project] name (the standard library is the package std: std_strlib_trim;
+a module named like its package uses the name once). Types and constants
+follow the same rule.
 """,
 
     'contracts': """## Contracts

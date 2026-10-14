@@ -1,0 +1,3 @@
+# Package pkg-a (#360): its modules' C names are pkg_a_<module>_<name>.
+[project]
+name = "pkg-a"

@@ -2,6 +2,11 @@
 #define SLOP_mylib_H
 
 #include "slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 1, but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 1
+#error "this module was generated for SLOP runtime ABI 1, which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -20,6 +25,11 @@ struct mylib_Config {
 };
 typedef struct mylib_Config mylib_Config;
 
+#ifndef SLOP_OPTION_MYLIB_CONFIG_DEFINED
+#define SLOP_OPTION_MYLIB_CONFIG_DEFINED
+SLOP_OPTION_DEFINE(mylib_Config, slop_option_mylib_Config)
+#endif
+
 mylib_Config mylib_create_config(int64_t timeout, int64_t retries, uint8_t enabled);
 int64_t mylib_config_get_timeout(mylib_Config cfg);
 int64_t mylib_config_get_retries(mylib_Config cfg);
@@ -35,6 +45,11 @@ uint8_t mylib_validate_retries(int64_t retries);
 #define mylib_add_numbers mylib_add
 #define mylib_multiply_numbers mylib_multiply
 #define mylib_get_status_code mylib_status_code
+
+#ifndef SLOP_OPTION_MYLIB_CONFIG_DEFINED
+#define SLOP_OPTION_MYLIB_CONFIG_DEFINED
+SLOP_OPTION_DEFINE(mylib_Config, slop_option_mylib_Config)
+#endif
 
 
 #endif

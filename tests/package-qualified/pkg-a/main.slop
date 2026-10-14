@@ -1,0 +1,13 @@
+;; An executable in package pkg-a importing its engine: the call sites emit
+;; the qualified names the module defines, including the std library's.
+(module main
+  (import engine (run describe Rule))
+
+  (fn main ()
+    (@intent "Exit 0 when the qualified calls agree with the module")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (if (and (== (run (Rule 21)) 42)
+               (string-eq (describe arena "  ok  ") "ok"))
+        0
+        1))))

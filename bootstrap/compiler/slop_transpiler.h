@@ -2,6 +2,11 @@
 #define SLOP_transpiler_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -175,6 +180,8 @@ void transpiler_emit_ffi_includes(context_TranspileContext* ctx);
 void transpiler_emit_ffi_includes_header(context_TranspileContext* ctx);
 void transpiler_emit_header_guard_open(context_TranspileContext* ctx);
 void transpiler_emit_header_guard_close(context_TranspileContext* ctx);
+int64_t transpiler_runtime_abi(void);
+slop_string transpiler_runtime_abi_label(slop_arena* arena, int64_t abi);
 void transpiler_emit_header_standard_includes(context_TranspileContext* ctx);
 void transpiler_emit_header_dependency_includes(context_TranspileContext* ctx);
 void transpiler_emit_forward_decls(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
@@ -217,7 +224,7 @@ void transpiler_emit_single_option_type_header(context_TranspileContext* ctx, co
 void transpiler_emit_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_primitive_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_primitive_option_types_header(context_TranspileContext* ctx);
-uint8_t transpiler_is_primitive_or_runtime_type(slop_string type_name);
+uint8_t transpiler_is_primitive_or_runtime_type(context_TranspileContext* ctx, slop_string type_name);
 void transpiler_emit_imported_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_imported_option_types_header(context_TranspileContext* ctx);
 void transpiler_emit_late_registered_list_types_header(context_TranspileContext* ctx);
@@ -290,7 +297,7 @@ slop_option_context_ResultType transpiler_find_result_type(context_TranspileCont
 uint8_t transpiler_result_side_available(context_TranspileContext* ctx, slop_string c_type);
 uint8_t transpiler_result_type_available(context_TranspileContext* ctx, slop_string c_name);
 uint8_t transpiler_is_emittable_container_type(context_TranspileContext* ctx, slop_string type_name);
-uint8_t transpiler_is_slop_runtime_type(slop_string type_name);
+uint8_t transpiler_is_slop_runtime_type(context_TranspileContext* ctx, slop_string type_name);
 uint8_t transpiler_is_primitive_type(slop_string type_name);
 slop_list_string transpiler_get_type_field_types(context_TranspileContext* ctx, types_SExpr* type_def);
 slop_list_string transpiler_extract_record_field_types(context_TranspileContext* ctx, slop_list_types_SExpr_ptr def_items);

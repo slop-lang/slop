@@ -12,7 +12,7 @@
     ;; Pointer-to-container unwrapping
     unwrap-ptr-container-type
     ;; Generated-container detection
-    is-container-c-type
+    is-container-c-type is-package-qualified
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
     ;; Type category predicates
@@ -24,11 +24,13 @@
     ;; Type variable detection
     is-type-variable
     ;; Resolved type bridge (checker → transpiler)
-    get-node-resolved-type resolved-type-to-c)
+    get-node-resolved-type resolved-type-to-c
+    ;; Package qualification of module C names (#360)
+    ModulePackage module-c-prefix parse-module-package)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType ResolvedTypeKind))
-  (import strlib (replace replace-all starts-with ends-with substring char-at))
+  (import strlib (replace replace-all starts-with ends-with substring char-at index-of))
 
   ;; ============================================================
   ;; C Keywords (must be escaped in identifiers)
@@ -225,22 +227,104 @@
         (string-concat arena "slop_" result)
         result)))
 
-  (fn type-to-identifier ((arena Arena) (c-type String))
+  ;; ============================================================
+  ;; Package Qualification (#360)
+  ;;
+  ;; A module's C names are <package>_<module>_<name> when the module belongs
+  ;; to a package, and <module>_<name> otherwise, so two libraries that each
+  ;; have a module of the same name can link into one program. The driver
+  ;; names each module's package (--package MODULE=NAME); every tool that
+  ;; builds a module-prefixed C name goes through module-c-prefix, so a
+  ;; module's own definitions, its importers and the test harness agree.
+  ;; ============================================================
+
+  (type ModulePackage
+    (record
+      (module-name String)          ;; SLOP module name, as written in (module ...)
+      (package String)))            ;; Package name, as written in slop.toml
+
+  (fn module-c-prefix ((arena Arena) (packages (List ModulePackage)) (mod-name String))
+    (@intent "C identifier prefix of a module's names: package_module, or module alone; a module named like its package (a one-module library) uses the name once")
+    (@spec ((Arena (List ModulePackage) String) -> String))
+    (@example (arena (list ModulePackage) "engine") -> "engine")
+    (@example (arena (list ModulePackage (ModulePackage "engine" "pkg-a")) "engine") -> "pkg_a_engine")
+    (@example (arena (list ModulePackage (ModulePackage "engine" "pkg-a")) "types") -> "types")
+    (@example (arena (list ModulePackage (ModulePackage "my-lib" "my-lib")) "my-lib") -> "my_lib")
+    (let ((c-mod-name (to-c-name arena mod-name))
+          (len (list-len packages))
+          (mut i 0)
+          (mut result c-mod-name))
+      (while (< i len)
+        (match (list-get packages i)
+          ((some entry)
+            (when (string-eq (. entry module-name) mod-name)
+              (let ((c-package (to-c-name arena (. entry package))))
+                (when (not (string-eq c-package c-mod-name))
+                  (set! result (string-concat arena c-package (string-concat arena "_" c-mod-name)))))
+              (set! i len)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn is-package-qualified ((arena Arena) (packages (List ModulePackage)) (c-name String))
+    (@intent "True when a C name starts with the prefix of a module that has a package: such a name is a user name even when the package starts with slop")
+    (@spec ((Arena (List ModulePackage) String) -> Bool))
+    (@example (arena (list ModulePackage) "slop_string") -> false)
+    (@example (arena (list ModulePackage (ModulePackage "rdf" "slop-rdf")) "slop_rdf_rdf_Term") -> true)
+    (@example (arena (list ModulePackage (ModulePackage "rdf" "slop-rdf")) "slop_string") -> false)
+    (@example (arena (list ModulePackage (ModulePackage "rdf" "slop-rdf")) "slop_rdf_rdfx") -> false)
+    (let ((len (list-len packages))
+          (mut i 0)
+          (mut found false))
+      (while (< i len)
+        (match (list-get packages i)
+          ((some entry)
+            (let ((prefix (string-concat arena (module-c-prefix arena packages (. entry module-name)) "_")))
+              (when (starts-with c-name prefix)
+                (set! found true)
+                (set! i len))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn parse-module-package ((arena Arena) (spec String))
+    (@intent "Parse the MODULE=NAME value of a --package flag; none unless both sides are present")
+    (@spec ((Arena String) -> (Option ModulePackage)))
+    (@example (arena "engine") -> none)
+    (@example (arena "=pkg-a") -> none)
+    (@example (arena "engine=") -> none)
+    (match (index-of spec "=")
+      ((some eq-pos)
+        (let ((len (cast Int (. spec len)))
+              (mod-name (substring arena spec 0 eq-pos))
+              (package (substring arena spec (+ eq-pos 1) (- len (+ eq-pos 1)))))
+          (if (or (== (cast Int (. mod-name len)) 0) (== (cast Int (. package len)) 0))
+            none
+            (some (ModulePackage mod-name package)))))
+      ((none) none)))
+
+  (fn type-to-identifier ((arena Arena) (c-type String) (packages (List ModulePackage)))
     (@intent "Convert C type to valid identifier component for container type names")
-    (@spec ((Arena String) -> String))
-    (@example (arena "int64_t") -> "int")
-    (@example (arena "slop_string") -> "string")
-    (@example (arena "MyRecord*") -> "MyRecord_ptr")
-    (@example (arena "void*") -> "void_ptr")
+    (@spec ((Arena String (List ModulePackage)) -> String))
+    (@example (arena "int64_t" (list ModulePackage)) -> "int")
+    (@example (arena "slop_string" (list ModulePackage)) -> "string")
+    (@example (arena "MyRecord*" (list ModulePackage)) -> "MyRecord_ptr")
+    (@example (arena "void*" (list ModulePackage)) -> "void_ptr")
     ;; Float and F32 are distinct C types and must not share an identifier:
     ;; the runtime defines slop_list_float over double.
-    (@example (arena "double") -> "float")
-    (@example (arena "float") -> "f32")
+    (@example (arena "double" (list ModulePackage)) -> "float")
+    (@example (arena "float" (list ModulePackage)) -> "f32")
+    ;; A package-qualified name keeps its prefix even when the package is
+    ;; named slop-something: the identifier must match the type's C name
+    ;; wherever a container name is built from it directly.
+    (@example (arena "slop_rdf_rdf_Term*" (list ModulePackage (ModulePackage "rdf" "slop-rdf"))) -> "slop_rdf_rdf_Term_ptr")
+    (@example (arena "slop_string" (list ModulePackage (ModulePackage "rdf" "slop-rdf"))) -> "string")
     ;; Replace pointer with _ptr suffix
     (let ((mut result (replace arena c-type "*" "_ptr")))
       (set! result (replace arena result " " "_"))
       ;; Strip slop_ prefix for cleaner container names (5 = len("slop_"))
-      (when (starts-with result "slop_")
+      (when (and (starts-with result "slop_")
+                 (not (is-package-qualified arena packages result)))
         (let ((len-minus-5 (cast (Int 0 ..) (- (string-len result) 5))))
           (set! result (substring arena result 5 len-minus-5))))
       ;; Normalize C type names to short identifiers for runtime compatibility
@@ -365,7 +449,7 @@
       ((num _) "void*")))
 
   (fn to-c-type-compound ((arena Arena) (items (List (Ptr SExpr))))
-    (@intent "Convert SLOP compound type to C type string")
+    (@intent "Convert SLOP compound type to C type string; the names here are never package-qualified (to-c-type-prefixed in context does that), so the identifiers are built with no packages")
     (@spec ((Arena (List (Ptr SExpr))) -> String))
     (let ((len (list-len items)))
       (if (< len 1)
@@ -401,7 +485,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type arena inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (type-to-identifier arena inner-c (list ModulePackage))))
                               (string-concat arena "slop_option_" inner-id)))
                           ((none) "/* TRANSPILER_ERROR: Option requires inner type */"))))
 
@@ -411,13 +495,13 @@
                                       "void"
                                       (match (list-get items 1)
                                         ((some ok-expr)
-                                          (type-to-identifier arena (to-c-type arena ok-expr)))
+                                          (type-to-identifier arena (to-c-type arena ok-expr) (list ModulePackage)))
                                         ((none) "void"))))
                             (err-id (if (< len 3)
                                        "slop_error"
                                        (match (list-get items 2)
                                          ((some err-expr)
-                                           (type-to-identifier arena (to-c-type arena err-expr)))
+                                           (type-to-identifier arena (to-c-type arena err-expr) (list ModulePackage)))
                                          ((none) "slop_error")))))
                         (string-concat arena
                           (string-concat arena "slop_result_" ok-id)
@@ -430,7 +514,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type arena inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (type-to-identifier arena inner-c (list ModulePackage))))
                               (string-concat arena "slop_list_" inner-id)))
                           ((none) "slop_list_void"))))
 
@@ -458,7 +542,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type arena inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (type-to-identifier arena inner-c (list ModulePackage))))
                               (string-concat arena "slop_chan_" inner-id)))
                           ((none) "slop_chan_void"))))
 
@@ -469,7 +553,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type arena inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (type-to-identifier arena inner-c (list ModulePackage))))
                               (string-concat arena "slop_thread_" inner-id)))
                           ((none) "slop_thread_void"))))
 
@@ -624,9 +708,9 @@
       ((num num) (. num resolved-type))
       ((lst lst) (. lst resolved-type))))
 
-  (fn resolved-type-to-c ((arena Arena) (rt (Ptr ResolvedType)))
+  (fn resolved-type-to-c ((arena Arena) (rt (Ptr ResolvedType)) (packages (List ModulePackage)))
     (@intent "Convert a checker ResolvedType to a C type string using transpiler conventions")
-    (@spec ((Arena (Ptr ResolvedType)) -> String))
+    (@spec ((Arena (Ptr ResolvedType) (List ModulePackage)) -> String))
     (@pre (!= rt nil))
     (let ((kind (. (deref rt) kind))
           (name (. (deref rt) name)))
@@ -644,7 +728,7 @@
           (let ((c-name (to-c-name arena name)))
             (match (. (deref rt) module-name)
               ((some mod-name)
-                (string-concat arena (string-concat arena (to-c-name arena mod-name) "_") c-name))
+                (string-concat arena (string-concat arena (module-c-prefix arena packages mod-name) "_") c-name))
               ((none) c-name))))
         ;; Ptr T -> inner_c* (but Chan/Thread already include *)
         ((== kind 'rk-ptr)
@@ -652,32 +736,32 @@
             ((some inner)
               (let ((inner-kind (. (deref inner) kind)))
                 (if (or (== inner-kind 'rk-chan) (== inner-kind 'rk-thread))
-                  (resolved-type-to-c arena inner)
-                  (string-concat arena (resolved-type-to-c arena inner) "*"))))
+                  (resolved-type-to-c arena inner packages)
+                  (string-concat arena (resolved-type-to-c arena inner packages) "*"))))
             ((none) "void*")))
         ;; Option T -> slop_option_<id>
         ((== kind 'rk-option)
           (match (. (deref rt) inner-type)
             ((some inner)
-              (let ((inner-c (resolved-type-to-c arena inner)))
-                (string-concat arena "slop_option_" (type-to-identifier arena inner-c))))
+              (let ((inner-c (resolved-type-to-c arena inner packages)))
+                (string-concat arena "slop_option_" (type-to-identifier arena inner-c packages))))
             ((none) "/* TRANSPILER_ERROR: Option requires inner type */")))
         ;; List T -> slop_list_<id>
         ((== kind 'rk-list)
           (match (. (deref rt) inner-type)
             ((some inner)
-              (let ((inner-c (resolved-type-to-c arena inner)))
-                (string-concat arena "slop_list_" (type-to-identifier arena inner-c))))
+              (let ((inner-c (resolved-type-to-c arena inner packages)))
+                (string-concat arena "slop_list_" (type-to-identifier arena inner-c packages))))
             ((none) "slop_list_void")))
         ;; Result T E -> slop_result_<ok_id>_<err_id>
         ((== kind 'rk-result)
           (let ((ok-id (match (. (deref rt) inner-type)
                          ((some ok-t)
-                           (type-to-identifier arena (resolved-type-to-c arena ok-t)))
+                           (type-to-identifier arena (resolved-type-to-c arena ok-t packages) packages))
                          ((none) "void")))
                 (err-id (match (. (deref rt) inner-type2)
                           ((some err-t)
-                            (type-to-identifier arena (resolved-type-to-c arena err-t)))
+                            (type-to-identifier arena (resolved-type-to-c arena err-t packages) packages))
                           ((none) "slop_error"))))
             (string-concat arena
               (string-concat arena "slop_result_" ok-id)
@@ -692,22 +776,22 @@
         ((== kind 'rk-array)
           (match (. (deref rt) inner-type)
             ((some inner)
-              (string-concat arena (resolved-type-to-c arena inner) "*"))
+              (string-concat arena (resolved-type-to-c arena inner packages) "*"))
             ((none) "void*")))
         ;; Chan T -> slop_chan_<inner_id>*
         ((== kind 'rk-chan)
           (match (. (deref rt) inner-type)
             ((some inner)
-              (let ((inner-c (resolved-type-to-c arena inner))
-                    (inner-id (type-to-identifier arena inner-c)))
+              (let ((inner-c (resolved-type-to-c arena inner packages))
+                    (inner-id (type-to-identifier arena inner-c packages)))
                 (string-concat arena (string-concat arena "slop_chan_" inner-id) "*")))
             ((none) "slop_chan_int*")))
         ;; Thread T -> slop_thread_<inner_id>*
         ((== kind 'rk-thread)
           (match (. (deref rt) inner-type)
             ((some inner)
-              (let ((inner-c (resolved-type-to-c arena inner))
-                    (inner-id (type-to-identifier arena inner-c)))
+              (let ((inner-c (resolved-type-to-c arena inner packages))
+                    (inner-id (type-to-identifier arena inner-c packages)))
                 (string-concat arena (string-concat arena "slop_thread_" inner-id) "*")))
             ((none) "slop_thread_int*")))
         ;; Type variable - should have been substituted before reaching transpiler

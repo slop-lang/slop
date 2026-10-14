@@ -27,6 +27,7 @@
     ;; Module context
     ctx-set-module ctx-get-module ctx-current-module-name
     ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
+    ctx-add-module-package ctx-module-package ctx-module-c-prefix ctx-get-module-packages ctx-type-id ctx-is-package-type
     ;; String building helpers
     ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens
     ;; Include management
@@ -117,7 +118,7 @@
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature BindingOrigin
                  RangeBounds int-range-expr-bounds range-subsumes range-contains range-to-string
                  resolved-type-range))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable
+  (import ctype (ModulePackage module-c-prefix is-package-qualified to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable
                  get-node-resolved-type))
   (import parser (parse))
   (import strlib (substring char-at starts-with string-build))
@@ -392,7 +393,9 @@
       (pos-line Int)
       (pos-col Int)
       ;; Ambiguous type names already reported in this module (#174)
-      (reported-ambiguities (List String))))
+      (reported-ambiguities (List String))
+      ;; Which package each module of the build belongs to (#360)
+      (module-packages (List ModulePackage))))
 
   ;; ============================================================
   ;; Context Creation
@@ -475,6 +478,7 @@
       (set! (deref ctx) pos-line 0)
       (set! (deref ctx) pos-col 0)
       (set! (deref ctx) reported-ambiguities (list-new arena String))
+      (set! (deref ctx) module-packages (list-new arena ModulePackage))
       ;; NOTE: String and Bytes have special constructor handling in
       ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
       ;; for correct field ordering. If adding a new primitive type that needs
@@ -1421,18 +1425,67 @@
     (. (deref ctx) enable-prefixing))
 
   (fn ctx-prefix-type ((ctx (Ptr TranspileContext)) (type-name String))
-    (@intent "Add module prefix to a type name if prefixing is enabled")
+    (@intent "Add the current module's C prefix to a name if prefixing is enabled")
     (@spec (((Ptr TranspileContext) String) -> String))
     (@pre {ctx != nil})
-    (let ((arena (. (deref ctx) arena)))
-      (if (ctx-prefixing-enabled ctx)
-        (match (ctx-get-module ctx)
-          ((some mod-name)
-            ;; Convert module name to valid C identifier (hyphens to underscores)
-            (let ((c-mod-name (to-c-name arena mod-name)))
-              (ctx-str ctx c-mod-name (ctx-str ctx "_" type-name))))
-          ((none) type-name))
-        type-name)))
+    (if (ctx-prefixing-enabled ctx)
+      (match (ctx-get-module ctx)
+        ((some mod-name)
+          (ctx-str3 ctx (ctx-module-c-prefix ctx mod-name) "_" type-name))
+        ((none) type-name))
+      type-name))
+
+  ;; ============================================================
+  ;; Package Qualification (#360): see module-c-prefix in ctype
+  ;; ============================================================
+
+  (fn ctx-add-module-package ((ctx (Ptr TranspileContext)) (mod-name String) (package String))
+    (@intent "Record which package a module belongs to")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) module-packages) (ModulePackage mod-name package)))
+
+  (fn ctx-module-package ((ctx (Ptr TranspileContext)) (mod-name String))
+    (@intent "The package a module belongs to, if the driver named one")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre {ctx != nil})
+    (let ((entries (. (deref ctx) module-packages))
+          (len (list-len entries))
+          (mut i 0)
+          (mut found (Option String) none))
+      (while (< i len)
+        (match (list-get entries i)
+          ((some entry)
+            (when (string-eq (. entry module-name) mod-name)
+              (set! found (some (. entry package)))
+              (set! i len)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn ctx-get-module-packages ((ctx (Ptr TranspileContext)))
+    (@intent "Every module-to-package entry the driver recorded")
+    (@spec (((Ptr TranspileContext)) -> (List ModulePackage)))
+    (@pre {ctx != nil})
+    (. (deref ctx) module-packages))
+
+  (fn ctx-module-c-prefix ((ctx (Ptr TranspileContext)) (mod-name String))
+    (@intent "C identifier prefix of a module's names: package_module, or module alone")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (module-c-prefix (. (deref ctx) arena) (. (deref ctx) module-packages) mod-name))
+
+  (fn ctx-type-id ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Identifier component of a C type for container names, leaving a package-qualified name intact")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (type-to-identifier (. (deref ctx) arena) c-type (. (deref ctx) module-packages)))
+
+  (fn ctx-is-package-type ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "True when a C type name is qualified by a registered package: it is a user type however it starts")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (is-package-qualified (. (deref ctx) arena) (. (deref ctx) module-packages) c-type))
 
   ;; ============================================================
   ;; Include Management
@@ -2847,7 +2900,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type-prefixed ctx inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (ctx-type-id ctx inner-c)))
                               (set! result (ctx-str ctx "slop_option_" inner-id))))
                           ((none) (do)))))
 
@@ -2858,12 +2911,12 @@
                         (when (>= len 2)
                           (match (list-get items 1)
                             ((some ok-expr)
-                              (set! ok-id (type-to-identifier arena (to-c-type-prefixed ctx ok-expr))))
+                              (set! ok-id (ctx-type-id ctx (to-c-type-prefixed ctx ok-expr))))
                             ((none) (do))))
                         (when (>= len 3)
                           (match (list-get items 2)
                             ((some err-expr)
-                              (set! err-id (type-to-identifier arena (to-c-type-prefixed ctx err-expr))))
+                              (set! err-id (ctx-type-id ctx (to-c-type-prefixed ctx err-expr))))
                             ((none) (do))))
                         (set! result (ctx-str ctx
                           (ctx-str ctx "slop_result_" ok-id)
@@ -2876,7 +2929,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type-prefixed ctx inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (ctx-type-id ctx inner-c)))
                               (set! result (ctx-str ctx "slop_list_" inner-id))))
                           ((none) (do)))))
 
@@ -2902,7 +2955,7 @@
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type-prefixed ctx inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
+                                  (inner-id (ctx-type-id ctx inner-c)))
                               (set! result (ctx-str ctx "slop_chan_" inner-id))))
                           ((none) (do)))))
 
@@ -2916,7 +2969,7 @@
                               ;; Map void to int (void can't be a struct field)
                               (if (string-eq inner-c "void")
                                 (set! result "slop_thread_int")
-                                (let ((inner-id (type-to-identifier arena inner-c)))
+                                (let ((inner-id (ctx-type-id ctx inner-c)))
                                   (set! result (ctx-str ctx "slop_thread_" inner-id))))))
                           ((none) (do)))))
 

@@ -14,12 +14,14 @@
     ;; Output generation
     generate-c-output
     ;; Result type helpers (for defn.slop)
-    build-result-type-name)
+    build-result-type-name
+    ;; The runtime ABI generated code is checked against
+    runtime-abi)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-find-type-binding ctx-find-own-type ctx-module-defines-types ctx-lookup-type-in-module ctx-type-name-exists ctx-set-pos ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
+                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-find-type-binding ctx-find-own-type ctx-module-defines-types ctx-lookup-type-in-module ctx-type-name-exists ctx-set-pos ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type ctx-module-c-prefix ctx-type-id ctx-is-package-type
                    ctx-add-include ctx-get-includes ctx-register-enum-variant ctx-register-enum-variant-in
                    ctx-register-union-variant ctx-get-union-variants UnionVariantEntry
                    ctx-register-result-type ctx-has-result-type ctx-get-result-types ResultType
@@ -42,7 +44,7 @@
                    ctx-register-struct-key-type ctx-get-struct-key-types ctx-lookup-value-key-type
                    ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
                    ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-container-c-type param-slop-type-string))
+  (import ctype (to-c-type to-c-name is-builtin-c-type is-container-c-type param-slop-type-string))
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
                 is-ffi-form is-ffi-struct-form transpile-ffi transpile-ffi-struct
@@ -204,7 +206,7 @@
                           ((none) (do))))
                       ;; Also register Option type for this record/union type itself
                       ;; since (Option UserType) is commonly used
-                      (let ((type-id (type-to-identifier arena c-name))
+                      (let ((type-id (ctx-type-id ctx c-name))
                             (option-c-name (ctx-str ctx "slop_option_" type-id)))
                         (ctx-register-option-type ctx c-name option-c-name)))
                     ;; Check if this is a type alias to Result and register it
@@ -692,8 +694,8 @@
     (@pre {ctx != nil})
     ;; Use type-to-identifier for consistent naming with ctype.slop
     (let ((arena (. (deref ctx) arena))
-          (ok-id (type-to-identifier arena ok-type))
-          (err-id (type-to-identifier arena err-type)))
+          (ok-id (ctx-type-id ctx ok-type))
+          (err-id (ctx-type-id ctx err-type)))
       (ctx-str5 ctx "slop_result_" ok-id "_" err-id "")))
 
   ;; ============================================================
@@ -762,7 +764,7 @@
                             (match (list-get items 1)
                               ((some type-expr)
                                 (let ((elem-c (to-c-type-prefixed ctx type-expr))
-                                      (elem-id (type-to-identifier (. (deref ctx) arena) elem-c))
+                                      (elem-id (ctx-type-id ctx elem-c))
                                       (c-name (ctx-str ctx "slop_chan_" elem-id)))
                                   (ctx-register-chan-type ctx elem-c c-name)))
                               ((none) (do)))))
@@ -772,7 +774,7 @@
                             (match (list-get items 1)
                               ((some type-expr)
                                 (let ((elem-c (to-c-type-prefixed ctx type-expr))
-                                      (elem-id (type-to-identifier (. (deref ctx) arena) elem-c))
+                                      (elem-id (ctx-type-id ctx elem-c))
                                       (c-name (ctx-str ctx "slop_chan_" elem-id)))
                                   (ctx-register-chan-type ctx elem-c c-name)))
                               ((none) (do)))))
@@ -986,7 +988,7 @@
                                 (match (deref sym-item)
                                   ((sym s)
                                     (let ((sym-name (. s name))
-                                          (c-mod-name (to-c-name arena mod-name))
+                                          (c-mod-name (ctx-module-c-prefix ctx mod-name))
                                           (c-sym-name (to-c-name arena sym-name)))
                                       (if (is-type-name sym-name)
                                         ;; Register type AND as variable (for constants like XSD_STRING)
@@ -1050,20 +1052,23 @@
     (@intent "Register SExpr union variants and types from the types module")
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
-    ;; Register the types themselves so they're recognized as constructors
-    ;; is_enum, is_record, is_union flags - use module-prefixed c-names
-    (ctx-register-type ctx (TypeEntry "SExpr" "types_SExpr" "types_SExpr" false false true "types" ""))
-    (ctx-register-type ctx (TypeEntry "SExprSymbol" "types_SExprSymbol" "types_SExprSymbol" false true false "types" ""))
-    (ctx-register-type ctx (TypeEntry "SExprString" "types_SExprString" "types_SExprString" false true false "types" ""))
-    (ctx-register-type ctx (TypeEntry "SExprNumber" "types_SExprNumber" "types_SExprNumber" false true false "types" ""))
-    (ctx-register-type ctx (TypeEntry "SExprList" "types_SExprList" "types_SExprList" false true false "types" ""))
-    ;; The types module defines SExpr as a union with these variants:
-    ;; (type SExpr (union (symbol SExprSymbol) (string SExprString) (number SExprNumber) (list SExprList)))
-    ;; Use prefixed names since SExpr comes from types module
-    (ctx-register-enum-variant-in ctx "sym" "types_SExpr" "types")
-    (ctx-register-enum-variant-in ctx "str" "types_SExpr" "types")
-    (ctx-register-enum-variant-in ctx "num" "types_SExpr" "types")
-    (ctx-register-enum-variant-in ctx "lst" "types_SExpr" "types")
+    ;; Prefixed the way the types module's own header names them: by its
+    ;; package, if it is in one (#360)
+    (let ((p (ctx-str ctx (ctx-module-c-prefix ctx "types") "_")))
+      ;; Register the types themselves so they're recognized as constructors
+      ;; is_enum, is_record, is_union flags - use module-prefixed c-names
+      (ctx-register-type ctx (TypeEntry "SExpr" (ctx-str ctx p "SExpr") (ctx-str ctx p "SExpr") false false true "types" ""))
+      (ctx-register-type ctx (TypeEntry "SExprSymbol" (ctx-str ctx p "SExprSymbol") (ctx-str ctx p "SExprSymbol") false true false "types" ""))
+      (ctx-register-type ctx (TypeEntry "SExprString" (ctx-str ctx p "SExprString") (ctx-str ctx p "SExprString") false true false "types" ""))
+      (ctx-register-type ctx (TypeEntry "SExprNumber" (ctx-str ctx p "SExprNumber") (ctx-str ctx p "SExprNumber") false true false "types" ""))
+      (ctx-register-type ctx (TypeEntry "SExprList" (ctx-str ctx p "SExprList") (ctx-str ctx p "SExprList") false true false "types" ""))
+      ;; The types module defines SExpr as a union with these variants:
+      ;; (type SExpr (union (symbol SExprSymbol) (string SExprString) (number SExprNumber) (list SExprList)))
+      ;; Use prefixed names since SExpr comes from types module
+      (ctx-register-enum-variant-in ctx "sym" (ctx-str ctx p "SExpr") "types")
+      (ctx-register-enum-variant-in ctx "str" (ctx-str ctx p "SExpr") "types")
+      (ctx-register-enum-variant-in ctx "num" (ctx-str ctx p "SExpr") "types")
+      (ctx-register-enum-variant-in ctx "lst" (ctx-str ctx p "SExpr") "types"))
     ;; Option and Result variants are built-in and don't need module prefix
     (ctx-register-enum-variant-in ctx "some" "Option" "")
     (ctx-register-enum-variant-in ctx "none" "Option" "")
@@ -1074,24 +1079,29 @@
     (@intent "Register FileMode and FileError variants from the file module")
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
-    ;; Register FileMode enum variants
-    (ctx-register-enum-variant-in ctx "read" "file_FileMode" "file")
-    (ctx-register-enum-variant-in ctx "write" "file_FileMode" "file")
-    (ctx-register-enum-variant-in ctx "append" "file_FileMode" "file")
-    (ctx-register-enum-variant-in ctx "read-write" "file_FileMode" "file")
-    (ctx-register-enum-variant-in ctx "write-read" "file_FileMode" "file")
-    (ctx-register-enum-variant-in ctx "append-read" "file_FileMode" "file")
-    ;; Register FileError enum variants
-    (ctx-register-enum-variant-in ctx "not-found" "file_FileError" "file")
-    (ctx-register-enum-variant-in ctx "permission" "file_FileError" "file")
-    (ctx-register-enum-variant-in ctx "io-error" "file_FileError" "file")
-    (ctx-register-enum-variant-in ctx "eof" "file_FileError" "file")
-    (ctx-register-enum-variant-in ctx "invalid-mode" "file_FileError" "file")
-    (ctx-register-enum-variant-in ctx "closed" "file_FileError" "file")
-    ;; Register type entries for file types
-    (ctx-register-type ctx (TypeEntry "FileMode" "file_FileMode" "file_FileMode" true false false "file" ""))
-    (ctx-register-type ctx (TypeEntry "FileError" "file_FileError" "file_FileError" true false false "file" ""))
-    (ctx-register-type ctx (TypeEntry "File" "file_File" "file_File" false true false "file" "")))
+    ;; Prefixed the way the file module's own header names them: by its
+    ;; package (std), if it is in one (#360)
+    (let ((p (ctx-str ctx (ctx-module-c-prefix ctx "file") "_"))
+          (mode (ctx-str ctx (ctx-module-c-prefix ctx "file") "_FileMode"))
+          (err (ctx-str ctx (ctx-module-c-prefix ctx "file") "_FileError")))
+      ;; Register FileMode enum variants
+      (ctx-register-enum-variant-in ctx "read" mode "file")
+      (ctx-register-enum-variant-in ctx "write" mode "file")
+      (ctx-register-enum-variant-in ctx "append" mode "file")
+      (ctx-register-enum-variant-in ctx "read-write" mode "file")
+      (ctx-register-enum-variant-in ctx "write-read" mode "file")
+      (ctx-register-enum-variant-in ctx "append-read" mode "file")
+      ;; Register FileError enum variants
+      (ctx-register-enum-variant-in ctx "not-found" err "file")
+      (ctx-register-enum-variant-in ctx "permission" err "file")
+      (ctx-register-enum-variant-in ctx "io-error" err "file")
+      (ctx-register-enum-variant-in ctx "eof" err "file")
+      (ctx-register-enum-variant-in ctx "invalid-mode" err "file")
+      (ctx-register-enum-variant-in ctx "closed" err "file")
+      ;; Register type entries for file types
+      (ctx-register-type ctx (TypeEntry "FileMode" mode mode true false false "file" ""))
+      (ctx-register-type ctx (TypeEntry "FileError" err err true false false "file" ""))
+      (ctx-register-type ctx (TypeEntry "File" (ctx-str ctx p "File") (ctx-str ctx p "File") false true false "file" ""))))
 
   (fn prescan-const ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Prescan a constant definition - register as variable for symbol resolution")
@@ -1767,12 +1777,7 @@
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (base-c-name (to-c-name arena type-name)))
-      (if (ctx-prefixing-enabled ctx)
-        (match (ctx-get-module ctx)
-          ((some mod-name)
-            (ctx-str ctx (to-c-name arena mod-name) (ctx-str ctx "_" base-c-name)))
-          ((none) base-c-name))
-        base-c-name)))
+      (ctx-prefix-type ctx base-c-name)))
 
   (fn predeclare-module-types ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int))
     (@intent "Register every type the module defines before its imports and bodies are prescanned")
@@ -1849,7 +1854,7 @@
                                 ((some inner)
                                   ;; Use prefixed inner type and build container name from it
                                   (let ((inner-c (to-c-type-prefixed ctx inner))
-                                        (inner-id (type-to-identifier arena inner-c))
+                                        (inner-id (ctx-type-id ctx inner-c))
                                         (c-name (ctx-str ctx "slop_option_" inner-id)))
                                     (ctx-register-option-type ctx inner-c c-name)
                                     ;; Recursively scan inner type
@@ -1862,7 +1867,7 @@
                                 ((some elem)
                                   ;; Use prefixed element type and build container name from it
                                   (let ((elem-c (to-c-type-prefixed ctx elem))
-                                        (elem-id (type-to-identifier arena elem-c))
+                                        (elem-id (ctx-type-id ctx elem-c))
                                         (c-name (ctx-str ctx "slop_list_" elem-id))
                                         (option-c-name (ctx-str ctx "slop_option_" elem-id)))
                                     (ctx-register-list-type ctx elem-c c-name)
@@ -1887,8 +1892,8 @@
                                       ;; Register the Result type
                                       (let ((ok-c (to-c-type-prefixed ctx ok-type))
                                             (err-c (to-c-type-prefixed ctx err-type))
-                                            (ok-id (type-to-identifier arena ok-c))
-                                            (err-id (type-to-identifier arena err-c))
+                                            (ok-id (ctx-type-id ctx ok-c))
+                                            (err-id (ctx-type-id ctx err-c))
                                             (c-name (ctx-str5 ctx "slop_result_" ok-id "_" err-id "")))
                                         (ctx-register-result-type ctx ok-c err-c c-name)
                                         ;; Recursively scan inner types for nested generics
@@ -1902,7 +1907,7 @@
                               (match (list-get items 1)
                                 ((some elem)
                                   (let ((elem-c (to-c-type-prefixed ctx elem))
-                                        (elem-id (type-to-identifier arena elem-c))
+                                        (elem-id (ctx-type-id ctx elem-c))
                                         (c-name (ctx-str ctx "slop_chan_" elem-id)))
                                     (ctx-register-chan-type ctx elem-c c-name)
                                     (scan-type-for-generics ctx elem)))
@@ -1915,7 +1920,7 @@
                                   (let ((result-c (to-c-type-prefixed ctx result)))
                                     ;; Map void to int64_t (void can't be a struct field)
                                     (let ((actual-c (if (string-eq result-c "void") "int64_t" result-c))
-                                          (result-id (type-to-identifier arena actual-c))
+                                          (result-id (ctx-type-id ctx actual-c))
                                           (c-name (ctx-str ctx "slop_thread_" result-id)))
                                       (ctx-register-thread-type ctx actual-c c-name)
                                       (scan-type-for-generics ctx result))))
@@ -1926,7 +1931,7 @@
                               (match (list-get items 1)
                                 ((some key-type)
                                   (let ((key-c (to-c-type-prefixed ctx key-type))
-                                        (key-id (type-to-identifier arena key-c))
+                                        (key-id (ctx-type-id ctx key-c))
                                         (list-c-name (ctx-str ctx "slop_list_" key-id))
                                         (option-c-name (ctx-str ctx "slop_option_" key-id)))
                                     (ctx-register-list-type ctx key-c list-c-name)
@@ -1936,7 +1941,7 @@
                                     (match (list-get items 2)
                                       ((some val-type)
                                         (let ((val-c (to-c-type-prefixed ctx val-type))
-                                              (val-id (type-to-identifier arena val-c))
+                                              (val-id (ctx-type-id ctx val-c))
                                               (val-option-c-name (ctx-str ctx "slop_option_" val-id)))
                                           (ctx-register-option-type ctx val-c val-option-c-name)
                                           (scan-type-for-generics ctx val-type)))
@@ -1948,7 +1953,7 @@
                               (match (list-get items 1)
                                 ((some elem-type)
                                   (let ((elem-c (to-c-type-prefixed ctx elem-type))
-                                        (elem-id (type-to-identifier arena elem-c))
+                                        (elem-id (ctx-type-id ctx elem-c))
                                         (list-c-name (ctx-str ctx "slop_list_" elem-id))
                                         (option-c-name (ctx-str ctx "slop_option_" elem-id)))
                                     (ctx-register-list-type ctx elem-c list-c-name)
@@ -2031,13 +2036,44 @@
     (ctx-emit-header ctx "")
     (ctx-emit-header ctx "#endif"))
 
+  ;; The runtime ABI this transpiler generates code for (#360), as YYYYNN:
+  ;; the year and the number of the ABI within it, so 202601 is ABI 2026-1.
+  ;; It must equal SLOP_RUNTIME_ABI in src/slop/runtime/slop_runtime.h, which
+  ;; says when to bump it; scripts/check_runtime_abi.sh fails the test suite
+  ;; if they differ.
+  (const RUNTIME_ABI Int 202601)
+
+  (fn runtime-abi ()
+    (@intent "The runtime ABI number this transpiler generates code for, for the build scripts")
+    (@spec (() -> Int))
+    RUNTIME_ABI)
+
+  (fn runtime-abi-label ((arena Arena) (abi Int))
+    (@intent "The YYYY-N form of a YYYYNN runtime ABI number, for messages")
+    (@spec ((Arena Int) -> String))
+    (@example (arena 202601) -> "2026-1")
+    (@example (arena 202611) -> "2026-11")
+    (string-concat arena (int-to-string arena (/ abi 100))
+      (string-concat arena "-" (int-to-string arena (% abi 100)))))
+
   (fn emit-header-standard-includes ((ctx (Ptr TranspileContext)))
-    (@intent "Emit standard includes to header")
+    (@intent "Emit standard includes to header, and the check that the runtime header is the ABI this code was generated for")
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
-    (ctx-emit-header ctx "#include \"slop_runtime.h\"")
-    (ctx-emit-header ctx "#include <stdint.h>")
-    (ctx-emit-header ctx "#include <stdbool.h>"))
+    (let ((arena (. (deref ctx) arena))
+          (abi (int-to-string arena RUNTIME_ABI))
+          (label (runtime-abi-label arena RUNTIME_ABI)))
+      (ctx-emit-header ctx "#include \"slop_runtime.h\"")
+      ;; slop_runtime.h is mostly static inline, so generated code compiled
+      ;; against another release's header links and misbehaves. Refuse at
+      ;; compile time instead.
+      (ctx-emit-header ctx "#ifndef SLOP_RUNTIME_ABI")
+      (ctx-emit-header ctx (ctx-str5 ctx "#error \"this module was generated for SLOP runtime ABI " label " (SLOP_RUNTIME_ABI " abi "), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code\""))
+      (ctx-emit-header ctx (ctx-str3 ctx "#elif SLOP_RUNTIME_ABI != " abi ""))
+      (ctx-emit-header ctx (ctx-str5 ctx "#error \"this module was generated for SLOP runtime ABI " label " (SLOP_RUNTIME_ABI " abi "), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it\""))
+      (ctx-emit-header ctx "#endif")
+      (ctx-emit-header ctx "#include <stdint.h>")
+      (ctx-emit-header ctx "#include <stdbool.h>")))
 
   (fn emit-header-dependency-includes ((ctx (Ptr TranspileContext)))
     (@intent "Emit dependency includes for imported modules")
@@ -2536,12 +2572,7 @@
                 ((some type-name)
                   (let ((base-name (to-c-name arena type-name))
                         ;; Add module prefix if prefixing is enabled
-                        (c-name (if (ctx-prefixing-enabled ctx)
-                                  (match (ctx-get-module ctx)
-                                    ((some mod-name)
-                                      (ctx-str ctx (to-c-name arena mod-name) (ctx-str ctx "_" base-name)))
-                                    ((none) base-name))
-                                  base-name)))
+                        (c-name (ctx-prefix-type ctx base-name)))
                     (ctx-emit-header ctx (ctx-str3 ctx "typedef struct " c-name (ctx-str ctx " " (ctx-str ctx c-name ";"))))
                     (set! emitted-any true)))
                 ((none) (do)))))
@@ -2949,7 +2980,7 @@
           ((some lt)
             ;; Only emit value-element lists whose elem type is a primitive or slop_* type
             (when (and (not (is-pointer-elem-type (. lt elem-type)))
-                       (is-primitive-or-runtime-type (. lt elem-type)))
+                       (is-primitive-or-runtime-type ctx (. lt elem-type)))
               (emit-single-list-type-header ctx lt)
               ;; Also emit Option<List<T>> if registered
               (emit-option-for-inner-type ctx (. lt c-name))))
@@ -2969,18 +3000,20 @@
             ;; Only emit value-element options whose inner type is a primitive or slop_* type
             ;; (but not if it's a slop_list_* type - those are handled by emit-primitive-list-types-header)
             (when (and (not (is-pointer-elem-type (. ot inner-type)))
-                       (is-primitive-or-runtime-type (. ot inner-type))
+                       (is-primitive-or-runtime-type ctx (. ot inner-type))
                        (not (starts-with (. ot inner-type) "slop_list_")))
               (emit-single-option-type-header ctx ot)))
           ((none) (do)))
         (set! i (+ i 1)))))
 
-  (fn is-primitive-or-runtime-type ((type-name String))
-    (@intent "Check if a type is primitive or a slop_* or set_* runtime type")
-    (@spec ((String) -> Bool))
+  (fn is-primitive-or-runtime-type ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Check if a type is primitive or a slop_* or set_* runtime type; a package-qualified name is a user type whatever it starts with")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
     (or (is-primitive-type type-name)
-        (or (starts-with type-name "slop_")
-            (starts-with type-name "set_"))))
+        (and (not (ctx-is-package-type ctx type-name))
+             (or (starts-with type-name "slop_")
+                 (starts-with type-name "set_")))))
 
   (fn emit-imported-list-types-header ((ctx (Ptr TranspileContext)))
     (@intent "Emit value-element List types for imported types (from other modules)")
@@ -2994,7 +3027,7 @@
           ((some lt)
             ;; Emit value-element lists whose elem type is imported (from another module)
             (when (and (not (is-pointer-elem-type (. lt elem-type)))
-                       (not (is-primitive-or-runtime-type (. lt elem-type)))
+                       (not (is-primitive-or-runtime-type ctx (. lt elem-type)))
                        (is-imported-type ctx (. lt elem-type)))
               (emit-single-list-type-header ctx lt)
               ;; Also emit Option<List<T>> if registered
@@ -3015,7 +3048,7 @@
             ;; Emit value-element options whose inner type is imported
             ;; (but not slop_list_* types - those are handled by emit-imported-list-types-header)
             (when (and (not (is-pointer-elem-type (. ot inner-type)))
-                       (not (is-primitive-or-runtime-type (. ot inner-type)))
+                       (not (is-primitive-or-runtime-type ctx (. ot inner-type)))
                        (not (starts-with (. ot inner-type) "slop_list_"))
                        (is-imported-type ctx (. ot inner-type)))
               (emit-single-option-type-header ctx ot)))
@@ -3887,7 +3920,7 @@
             (let ((emitted-marker (ctx-str ctx "hasheq:" c-type)))
               (when (not (ctx-is-type-emitted ctx emitted-marker))
                 (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" ""))
-                      (list-c-name (ctx-str ctx "slop_list_" (type-to-identifier (. (deref ctx) arena) c-type))))
+                      (list-c-name (ctx-str ctx "slop_list_" (ctx-type-id ctx c-type))))
                   (ctx-mark-type-emitted ctx emitted-marker)
                   (when (not banner)
                     (set! banner true)
@@ -4081,37 +4114,40 @@
     (@spec (((Ptr TranspileContext) String String) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. ctx arena))
-          (elem-id (type-to-identifier arena elem-type)))
+          (elem-id (ctx-type-id ctx elem-type))
+          ;; The thread module's ChanError, under the package thread is in (#360)
+          (chan-err (ctx-str ctx (ctx-module-c-prefix ctx "thread") "_ChanError"))
+          (send-result-type (ctx-str ctx "slop_result_void_" (ctx-str ctx (ctx-module-c-prefix ctx "thread") "_ChanError")))
+          (send-guard (ctx-str3 ctx "SLOP_RESULT_VOID_" (uppercase-name ctx (ctx-str ctx (ctx-module-c-prefix ctx "thread") "_ChanError")) "_DEFINED")))
       ;; Forward declare send Result type (void/Unit for send)
-      (ctx-emit-header ctx "#ifndef SLOP_RESULT_VOID_THREAD_CHANERROR_DEFINED")
-      (ctx-emit-header ctx "#define SLOP_RESULT_VOID_THREAD_CHANERROR_DEFINED")
-      (ctx-emit-header ctx "typedef struct slop_result_void_thread_ChanError {")
+      (ctx-emit-header ctx (ctx-str ctx "#ifndef " send-guard))
+      (ctx-emit-header ctx (ctx-str ctx "#define " send-guard))
+      (ctx-emit-header ctx (ctx-str3 ctx "typedef struct " send-result-type " {"))
       (ctx-emit-header ctx "    bool is_ok;")
-      (ctx-emit-header ctx "    union { uint8_t ok; thread_ChanError err; } data;")
-      (ctx-emit-header ctx "} slop_result_void_thread_ChanError;")
+      (ctx-emit-header ctx (ctx-str3 ctx "    union { uint8_t ok; " chan-err " err; } data;"))
+      (ctx-emit-header ctx (ctx-str3 ctx "} " send-result-type ";"))
       (ctx-emit-header ctx "#endif")
       (ctx-emit-header ctx "")
       ;; Forward declare recv Result type (elem-type for recv)
-      (let ((recv-result-type (ctx-str3 ctx "slop_result_" elem-id "_thread_ChanError"))
-            (recv-guard (ctx-str3 ctx "SLOP_RESULT_" (uppercase-name ctx elem-id) "_THREAD_CHANERROR_DEFINED")))
+      (let ((recv-result-type (ctx-str3 ctx "slop_result_" elem-id (ctx-str ctx "_" chan-err)))
+            (recv-guard (ctx-str3 ctx "SLOP_RESULT_" (uppercase-name ctx (ctx-str3 ctx elem-id "_" chan-err)) "_DEFINED")))
         (ctx-emit-header ctx (ctx-str ctx "#ifndef " recv-guard))
         (ctx-emit-header ctx (ctx-str ctx "#define " recv-guard))
         (ctx-emit-header ctx (ctx-str3 ctx "typedef struct " recv-result-type " {"))
         (ctx-emit-header ctx "    bool is_ok;")
-        (let ((union-line (ctx-str ctx "    union { " (ctx-str ctx elem-type " ok; thread_ChanError err; } data;"))))
+        (let ((union-line (ctx-str ctx "    union { " (ctx-str3 ctx elem-type (ctx-str ctx " ok; " chan-err) " err; } data;"))))
           (ctx-emit-header ctx union-line))
         (ctx-emit-header ctx (ctx-str3 ctx "} " recv-result-type ";"))
         (ctx-emit-header ctx "#endif")
         (ctx-emit-header ctx "")
         (let ((send-name (ctx-str ctx "thread_send_" c-name))
               (recv-name (ctx-str ctx "thread_recv_" c-name))
-              (send-result-type "slop_result_void_thread_ChanError")
               ;; Pre-build common return statements for send
               (ret-ok (ctx-str3 ctx "        return (" send-result-type "){.is_ok = 1};"))
-              (ret-closed (ctx-str3 ctx "        return (" send-result-type "){.is_ok = 0, .data.err = thread_ChanError_send_on_closed};"))
-              (ret-closed12 (ctx-str3 ctx "            return (" send-result-type "){.is_ok = 0, .data.err = thread_ChanError_send_on_closed};"))
+              (ret-closed (ctx-str3 ctx "        return (" send-result-type (ctx-str3 ctx "){.is_ok = 0, .data.err = " chan-err "_send_on_closed};")))
+              (ret-closed12 (ctx-str3 ctx "            return (" send-result-type (ctx-str3 ctx "){.is_ok = 0, .data.err = " chan-err "_send_on_closed};")))
               ;; Pre-build return statements for recv
-              (ret-err-closed (ctx-str3 ctx "        return (" recv-result-type "){.is_ok = 0, .data.err = thread_ChanError_closed};")))
+              (ret-err-closed (ctx-str3 ctx "        return (" recv-result-type (ctx-str3 ctx "){.is_ok = 0, .data.err = " chan-err "_closed};"))))
           ;; Build send function signature
           (let ((send-sig-1 (ctx-str3 ctx "static " send-result-type " "))
                 (send-sig-2 (ctx-str ctx send-sig-1 send-name))
@@ -4651,7 +4687,7 @@
       (or (is-primitive-type type-name)
           (starts-with type-name "Ptr ")
           (starts-with type-name "(Ptr")
-          (is-slop-runtime-type type-name)
+          (is-slop-runtime-type ctx type-name)
           (is-runtime-option-type type-name)
           (is-runtime-list-type type-name)
           (is-type-emitted-or-primitive ctx type-name)
@@ -4715,12 +4751,16 @@
                 (is-imported-type ctx inner))))
         (else false))))
 
-  (fn is-slop-runtime-type ((type-name String))
-    (@intent "Check if type is a slop runtime type (not generated list/option)")
-    (@spec ((String) -> Bool))
+  (fn is-slop-runtime-type ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Check if type is a slop runtime type (not generated list/option, not a package-qualified user type)")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
     ;; slop_list_* and slop_option_* are generated and need to be emitted
-    ;; Other slop_* types (slop_string, slop_arena*, etc.) are from runtime
+    ;; Other slop_* types (slop_string, slop_arena*, etc.) are from runtime,
+    ;; unless the name is a package's: a package named slop-rdf has its types
+    ;; at slop_rdf_<module>_<Type>
     (and (starts-with type-name "slop_")
+         (not (ctx-is-package-type ctx type-name))
          (not (starts-with type-name "slop_list_"))
          (not (starts-with type-name "slop_option_"))))
 
@@ -4889,7 +4929,7 @@
                                   (let ((inner-str (get-field-type-string ctx inner)))
                                     (if (string-eq inner-str "")
                                       ""
-                                      (ctx-str ctx "slop_option_" (type-to-identifier arena inner-str)))))
+                                      (ctx-str ctx "slop_option_" (ctx-type-id ctx inner-str)))))
                                 ((none) ""))
                               ""))
                           ((string-eq kind "List")
@@ -4899,7 +4939,7 @@
                                   (let ((inner-str (get-field-type-string ctx inner)))
                                     (if (string-eq inner-str "")
                                       ""
-                                      (ctx-str ctx "slop_list_" (type-to-identifier arena inner-str)))))
+                                      (ctx-str ctx "slop_list_" (ctx-type-id ctx inner-str)))))
                                 ((none) ""))
                               ""))
                           ;; (Result T E) - slop_result_<T>_<E>, so the sort sees it
@@ -4914,8 +4954,8 @@
                                             (err-str (get-field-type-string ctx err-expr)))
                                         (if (or (string-eq ok-str "") (string-eq err-str ""))
                                           ""
-                                          (ctx-str4 ctx "slop_result_" (type-to-identifier arena ok-str)
-                                                    "_" (type-to-identifier arena err-str)))))
+                                          (ctx-str4 ctx "slop_result_" (ctx-type-id ctx ok-str)
+                                                    "_" (ctx-type-id ctx err-str)))))
                                     ((none) "")))
                                 ((none) ""))
                               ""))
@@ -5153,7 +5193,7 @@
           ;; Convert module name to C-style (replace - with _) before comparing
           ;; Module names use hyphens (type-extract) but C types use underscores (type_extract_)
           (let ((arena (. (deref ctx) arena))
-                (c-mod (to-c-name arena current-mod))
+                (c-mod (ctx-module-c-prefix ctx current-mod))
                 (current-prefix (ctx-str ctx c-mod "_")))
             ;; If type has an underscore but doesn't start with current module prefix,
             ;; it's an imported type (from a different module's header)
@@ -5302,12 +5342,7 @@
                       (let ((type-name (. name-sym name))
                             (base-name (to-c-name arena type-name))
                             ;; Add module prefix if prefixing is enabled
-                            (c-name (if (ctx-prefixing-enabled ctx)
-                                      (match (ctx-get-module ctx)
-                                        ((some mod-name)
-                                          (ctx-str ctx (to-c-name arena mod-name) (ctx-str ctx "_" base-name)))
-                                        ((none) base-name))
-                                      base-name)))
+                            (c-name (ctx-prefix-type ctx base-name)))
                         (match (list-get items 2)
                           ((some body-expr)
                             (emit-type-body-to-header ctx type-name c-name body-expr)

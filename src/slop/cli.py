@@ -25,7 +25,8 @@ from slop.providers import (
     MockProvider, create_default_configs, load_config, create_from_config, Tier,
     load_project_config, ProjectConfig, BuildConfig, TestConfig, VerifyConfig
 )
-from slop.resolver import ModuleResolver, ResolverError, duplicate_module_message
+from slop.resolver import (ModuleResolver, ResolverError, duplicate_module_message,
+                           package_flags, package_flags_for_files)
 from slop import __version__, paths
 
 
@@ -341,12 +342,16 @@ def _report_native_compiler_failure(result) -> str:
     return f"slop-compiler exited with status {result.returncode}"
 
 
-def transpile_native(input_file: str, dep_files: list[str] = None):
+def transpile_native(input_file: str, dep_files: list[str] = None, packages: dict = None):
     """Transpile using native transpiler, returns (c_code, success).
 
     Args:
         input_file: The main file to transpile
         dep_files: Optional list of dependency files (in dependency order)
+        packages: {module name: path} of every module whose package the
+            compiler should know (#360); defaults to the files given. Pass
+            the whole dependency graph when the files do not cover the
+            imports, or imported names come out unqualified.
 
     Returns tuple of (output, success). If native transpiler isn't available,
     returns (None, False). On failure the compiler's errors have already been
@@ -365,7 +370,8 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
         all_files = dep_files + [input_file]
 
     try:
-        cmd_prefix = [str(compiler_bin), 'transpile']
+        flags = package_flags(packages) if packages is not None else package_flags_for_files(all_files)
+        cmd_prefix = [str(compiler_bin), 'transpile'] + flags
         result = subprocess.run(
             cmd_prefix + all_files,
             capture_output=True,
@@ -425,7 +431,7 @@ def transpile_native_split(input_file: str):
         return None, False
 
     try:
-        cmd = [str(compiler_bin), 'transpile']
+        cmd = [str(compiler_bin), 'transpile'] + package_flags_for_files([input_file])
         cmd.append(input_file)
         result = subprocess.run(
             cmd,
@@ -536,9 +542,8 @@ def test_native(input_file: str, dep_files: list = None):
         return None, 0, '', False
 
     try:
-        cmd = [str(tester_bin), input_file]
-        if dep_files:
-            cmd.extend(dep_files)
+        all_files = [input_file] + list(dep_files or [])
+        cmd = [str(tester_bin)] + package_flags_for_files(all_files) + all_files
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -668,7 +673,17 @@ def cmd_transpile(args):
     try:
         input_path = Path(args.input)
 
-        c_code, success = transpile_native(str(input_path))
+        # Imported modules are not transpiled here, but their names are
+        # emitted, so their packages must be known (#360). Resolution is best
+        # effort: a module that cannot be found gets the compiler's own error.
+        packages = None
+        try:
+            resolver = ModuleResolver(paths.get_stdlib_include_paths())
+            graph = resolver.build_dependency_graph(input_path)
+            packages = {name: info.path for name, info in graph.modules.items()}
+        except ResolverError:
+            pass
+        c_code, success = transpile_native(str(input_path), packages=packages)
         if not success:
             if c_code is None:
                 print("Error: Native SLOP compiler not found. Run 'make build-native' to build the native toolchain.", file=sys.stderr)
@@ -2317,7 +2332,16 @@ def cmd_check_hole(args):
 
 
 def _get_runtime_path() -> Path:
-    """Get path to bundled runtime header"""
+    """Get path to bundled runtime header.
+
+    SLOP_RUNTIME_DIR overrides it: the native build compiles the output of a
+    compiler against the runtime header of the ABI that compiler generates
+    for, which across an ABI bump is not the current one (see
+    scripts/build_native.sh).
+    """
+    override = os.environ.get('SLOP_RUNTIME_DIR')
+    if override:
+        return Path(override)
     try:
         from importlib.resources import files
         return files('slop.runtime')
@@ -2521,7 +2545,8 @@ def _build_library_from_sources(
     if native_compiler_bin:
         # Use native compiler - it outputs JSON with per-module header/impl
         source_files_ordered = [_native_path(all_modules[name].path) for name in order]
-        cmd = [str(native_compiler_bin), 'transpile'] + source_files_ordered
+        cmd = [str(native_compiler_bin), 'transpile'] + package_flags(
+            {name: info.path for name, info in all_modules.items()}) + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             # Check if stderr contains actual errors (not just warnings)
@@ -2920,7 +2945,8 @@ def cmd_build(args):
             if native_compiler_bin:
                 # Use native compiler - it outputs JSON with per-module header/impl
                 source_files = [_native_path(graph.modules[name].path) for name in order]
-                cmd = [str(native_compiler_bin), 'transpile'] + source_files
+                cmd = [str(native_compiler_bin), 'transpile'] + package_flags(
+                    {name: info.path for name, info in graph.modules.items()}) + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     # Check if stderr contains actual errors (not just warnings)
@@ -3713,7 +3739,6 @@ def cmd_test(args):
         cache_dir = Path(test_section.get('cache', '.slop-test'))
         if config_dir:
             cache_dir = config_dir / cache_dir
-        cache_dir.mkdir(exist_ok=True)
 
         # Build dependency graph for the test file
         resolver = ModuleResolver(search_paths)
@@ -3746,6 +3771,7 @@ def cmd_test(args):
         # cross-module type information, avoiding incorrect fallback to memcmp for unions
         test_module_name = input_path.stem
         if not use_native:
+            cache_dir.mkdir(exist_ok=True)
             for mod_name in build_order:
                 if graph.modules[mod_name].path == input_path.resolve():
                     continue  # Skip the test file itself

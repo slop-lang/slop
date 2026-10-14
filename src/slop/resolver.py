@@ -4,6 +4,8 @@ SLOP Module Resolver - Handles module discovery, dependency graphs, and linking.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
+import tomllib
 from typing import Dict, List, Optional, Set, Tuple
 
 from slop.parser import (
@@ -442,3 +444,121 @@ def resolve_modules(entry_path: str, search_paths: List[str] = None) -> Tuple[Mo
     order = resolver.topological_sort(graph)
 
     return graph, order
+
+
+# ============================================================
+# Packages (#360)
+#
+# A module's generated C names are <package>_<module>_<name>, so two
+# libraries that each have a module of the same name can link into one
+# program. The package of a module is the [project] name of the nearest
+# slop.toml at or above the module's file; a module under no such file has
+# no package and keeps <module>_<name>. The native tools are told each
+# module's package with --package MODULE=NAME flags.
+# ============================================================
+
+# A package name becomes a C identifier prefix (hyphens turn into
+# underscores, as in module names), so it is limited to what survives that.
+PACKAGE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_-]*$')
+# A package named slop-rdf gives its modules the prefix slop_rdf_, which the
+# transpiler tells apart from the runtime's own slop_ names by the packages it
+# was given. The one name it cannot tell apart is the bare "slop": its module
+# "list" would sit at slop_list_, the generated containers' own prefix.
+RESERVED_PACKAGE_RE = re.compile(r'^slop$', re.IGNORECASE)
+
+_package_cache: Dict[Path, Optional[str]] = {}
+
+
+class PackageNameError(ResolverError):
+    """A slop.toml [project] name that cannot qualify C identifiers."""
+    pass
+
+
+def _project_name_in(toml_path: Path) -> Optional[str]:
+    try:
+        with open(toml_path, 'rb') as f:
+            cfg = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ResolverError(f"{toml_path}: {e}") from e
+    project = cfg.get('project')
+    if not isinstance(project, dict):
+        return None
+    name = project.get('name')
+    if name is None or name == '':
+        return None
+    if not isinstance(name, str) or not PACKAGE_NAME_RE.match(name):
+        raise PackageNameError(
+            f"{toml_path}: [project] name {name!r} cannot qualify the C names of the "
+            f"package's modules: use letters, digits, '_' and '-', starting with a "
+            f"letter or '_'")
+    if RESERVED_PACKAGE_RE.match(name):
+        raise PackageNameError(
+            f"{toml_path}: [project] name {name!r} would give the package's modules the C "
+            f"prefix slop_, which is the runtime's: a module list would be slop_list_")
+    return name
+
+
+def package_name_for(path: Path) -> Optional[str]:
+    """The package a .slop file belongs to, or None.
+
+    The nearest slop.toml at or above the file's directory that has a
+    [project] name decides; one without a name is passed over.
+    """
+    d = Path(path).resolve().parent
+    walked = []
+    result = None
+    while True:
+        if d in _package_cache:
+            result = _package_cache[d]
+            break
+        walked.append(d)
+        toml_path = d / 'slop.toml'
+        if toml_path.is_file():
+            name = _project_name_in(toml_path)
+            if name:
+                result = name
+                break
+        if d.parent == d:
+            break
+        d = d.parent
+    for w in walked:
+        _package_cache[w] = result
+    return result
+
+
+def module_packages(modules: Dict[str, Path]) -> Dict[str, str]:
+    """{module name: package name} for the modules (name -> path) that have one."""
+    out = {}
+    for name, path in modules.items():
+        pkg = package_name_for(path)
+        if pkg:
+            out[name] = pkg
+    return out
+
+
+def package_flags(modules: Dict[str, Path]) -> List[str]:
+    """The --package MODULE=NAME flags that tell slop-compiler and slop-tester
+    which package each module (name -> path) belongs to."""
+    flags = []
+    for name, pkg in sorted(module_packages(modules).items()):
+        flags.extend(['--package', f'{name}={pkg}'])
+    return flags
+
+
+def package_flags_for_files(files) -> List[str]:
+    """package_flags for .slop files whose module names are not known yet.
+
+    A file that does not parse contributes nothing: the native tool reports
+    the parse error itself.
+    """
+    resolver = ModuleResolver([])
+    modules: Dict[str, Path] = {}
+    for f in files:
+        try:
+            info = resolver.load_module(Path(f))
+        except ResolverError as e:
+            if isinstance(e, PackageNameError):
+                raise
+            continue
+        modules[info.name] = info.path
+    return package_flags(modules)

@@ -34,6 +34,7 @@
   (import parser (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   pretty-print))
+  (import ctype (ModulePackage))
 
   ;; ============================================================
   ;; Type Entry - A single type definition
@@ -80,7 +81,8 @@
   (type TypeRegistry (record
     (types (List (Ptr TstTypeEntry)))
     (module-prefix String)
-    (import-entries (List ImportEntry))))  ;; Full import mappings for symbol lookup
+    (import-entries (List ImportEntry))   ;; Full import mappings for symbol lookup
+    (packages (List ModulePackage))))     ;; Which package each module belongs to (#360)
 
   ;; ============================================================
   ;; Constructor
@@ -90,13 +92,14 @@
     (@intent "Create empty type registry with module prefix")
     (@spec ((Arena String) -> TypeRegistry))
     (@alloc arena)
-    (TypeRegistry (list-new arena (Ptr TstTypeEntry)) prefix (list-new arena ImportEntry)))
+    (TypeRegistry (list-new arena (Ptr TstTypeEntry)) prefix (list-new arena ImportEntry) (list-new arena ModulePackage)))
 
-  (fn make-type-registry-with-imports ((arena Arena) (prefix String) (imports (List ImportEntry)))
-    (@intent "Create empty type registry with module prefix and import mappings")
-    (@spec ((Arena String (List ImportEntry)) -> TypeRegistry))
+  (fn make-type-registry-with-imports ((arena Arena) (prefix String) (imports (List ImportEntry))
+                                        (packages (List ModulePackage)))
+    (@intent "Create empty type registry with module prefix, import mappings and module packages")
+    (@spec ((Arena String (List ImportEntry) (List ModulePackage)) -> TypeRegistry))
     (@alloc arena)
-    (TypeRegistry (list-new arena (Ptr TstTypeEntry)) prefix imports))
+    (TypeRegistry (list-new arena (Ptr TstTypeEntry)) prefix imports packages))
 
   ;; ============================================================
   ;; Registry Mutation
@@ -152,16 +155,17 @@
     (@intent "Build TypeRegistry from parsed AST")
     (@spec ((Arena (List (Ptr SExpr)) String) -> (Ptr TypeRegistry)))
     (@alloc arena)
-    (extract-types-from-ast-with-imports arena ast module-prefix (list-new arena ImportEntry)))
+    (extract-types-from-ast-with-imports arena ast module-prefix (list-new arena ImportEntry) (list-new arena ModulePackage)))
 
   (fn extract-types-from-ast-with-imports ((arena Arena) (ast (List (Ptr SExpr)))
-                                            (module-prefix String) (imports (List ImportEntry)))
-    (@intent "Build TypeRegistry from parsed AST with import mappings")
-    (@spec ((Arena (List (Ptr SExpr)) String (List ImportEntry)) -> (Ptr TypeRegistry)))
+                                            (module-prefix String) (imports (List ImportEntry))
+                                            (packages (List ModulePackage)))
+    (@intent "Build TypeRegistry from parsed AST with import mappings and module packages")
+    (@spec ((Arena (List (Ptr SExpr)) String (List ImportEntry) (List ModulePackage)) -> (Ptr TypeRegistry)))
     (@alloc arena)
     ;; Allocate the registry on the arena
     (let ((reg-ptr (cast (Ptr TypeRegistry) (arena-alloc arena (sizeof TypeRegistry)))))
-      (set! (deref reg-ptr) (make-type-registry-with-imports arena module-prefix imports))
+      (set! (deref reg-ptr) (make-type-registry-with-imports arena module-prefix imports packages))
       (let ((len (list-len ast))
             (mut i 0))
         (while (< i len)

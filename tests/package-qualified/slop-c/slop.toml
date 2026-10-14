@@ -1,0 +1,4 @@
+# A package whose name starts with slop: its C prefix slop_c_ must not be
+# taken for a runtime type by the transpiler
+[project]
+name = "slop-c"

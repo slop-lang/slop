@@ -1,0 +1,27 @@
+;; One of two libraries that each have a module named engine with a
+;; function named run and a type named Rule (#360). Without package
+;; qualification both would be engine_run and engine_Rule, and the two
+;; libraries could not link into one program.
+(module engine
+  (export run describe Rule)
+  (import strlib (trim))
+
+  (type Rule (record (weight Int)))
+
+  (fn run ((r Rule))
+    (@intent "pkg-a's rule: double the weight")
+    (@spec ((Rule) -> Int))
+    (@example ((Rule 21)) -> 42)
+    (* (. r weight) 2))
+
+  (fn describe ((arena Arena) (s String))
+    (@intent "Trim through the std library, whose names are qualified too")
+    (@spec ((Arena String) -> String))
+    (@example (arena "  a  ") -> "a")
+    (trim arena s))
+
+  (fn public-entry ((x Int))
+    (@intent "A :c-name is emitted exactly as written, package or not")
+    (@spec ((Int) -> Int))
+    (+ x 1)
+    :c-name "engine_entry_a"))

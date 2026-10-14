@@ -1,0 +1,17 @@
+;; An executable in package slop-c holding a List and an Option of the
+;; imported slop_c_engine_Rule: the containers of a slop_-prefixed user type
+;; must be emitted on the importing side too.
+(module main
+  (import engine (Rule make-rules first-heavy weigh))
+
+  (fn main ()
+    (@intent "Exit 0 when the first heavy rule of 1..4 weighs 3")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((rules (make-rules arena 4)))
+        (match (first-heavy rules)
+          ((some r)
+            (match (weigh r)
+              ((ok w) (if (== w 3) 0 1))
+              ((error e) 2)))
+          ((none) 3))))))

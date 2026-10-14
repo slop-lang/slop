@@ -2,6 +2,11 @@
 #define SLOP_compiler_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_parser.h"
@@ -85,6 +90,7 @@ slop_string compiler_emit_typed_toplevel(slop_arena* arena, types_SExpr* expr);
 slop_string compiler_emit_typed_module(slop_arena* arena, types_SExpr* module_form);
 slop_string compiler_emit_typed_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast);
 int64_t compiler_typed_ast_single_file(type_env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first);
+uint8_t compiler_register_package_flags(slop_arena* arena, context_TranspileContext* ctx, int64_t argc, uint8_t** argv, int64_t start);
 int main(int argc, char** _c_argv);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

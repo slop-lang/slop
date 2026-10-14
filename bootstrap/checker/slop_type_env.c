@@ -688,7 +688,7 @@ slop_option_types_FnSignature_ptr type_env_env_lookup_function(type_env_TypeEnv*
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = type_env_env_arena(env);
-        __auto_type own = ({ __auto_type _mv = type_env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; type_env_env_lookup_function_direct(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = mod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
+        __auto_type own = ({ __auto_type _mv = type_env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; type_env_env_lookup_function_direct(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = mod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
         __auto_type _mv_64 = own;
         if (_mv_64.has_value) {
             __auto_type _ = _mv_64.value;
@@ -792,7 +792,7 @@ uint8_t type_env_env_imports_variant_type(type_env_TypeEnv* env, type_env_Varian
         __auto_type _mv_70 = type_env_env_resolve_import(env, v.enum_name);
         if (_mv_70.has_value) {
             __auto_type qualified = _mv_70.value;
-            return string_eq(qualified, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = vmod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = v.enum_name; _ll; })));
+            return string_eq(qualified, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = vmod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = v.enum_name; _ll; })));
         } else if (!_mv_70.has_value) {
             return 0;
         }
@@ -836,7 +836,7 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_variant(type_env_TypeEnv*
                                     __auto_type _ = _mv_73.value;
                                     if (!(reported) && (!(string_eq(imported_mod, vmod)) || !(string_eq(imported_type, v.enum_name)))) {
                                         reported = 1;
-                                        type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 11 * sizeof(slop_string)), .len = 11, .cap = 11, .arena = arena }; _ll.data[0] = SLOP_STR("variant '"); _ll.data[1] = variant_name; _ll.data[2] = SLOP_STR("' is ambiguous: imported from both '"); _ll.data[3] = imported_mod; _ll.data[4] = SLOP_STR("' ("); _ll.data[5] = imported_type; _ll.data[6] = SLOP_STR(") and '"); _ll.data[7] = vmod; _ll.data[8] = SLOP_STR("' ("); _ll.data[9] = v.enum_name; _ll.data[10] = SLOP_STR(")"); _ll; })), line, col);
+                                        type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 11 * sizeof(slop_string)), .len = 11, .cap = 11, .arena = arena }; _ll.data[0] = SLOP_STR("variant '"); _ll.data[1] = variant_name; _ll.data[2] = SLOP_STR("' is ambiguous: imported from both '"); _ll.data[3] = imported_mod; _ll.data[4] = SLOP_STR("' ("); _ll.data[5] = imported_type; _ll.data[6] = SLOP_STR(") and '"); _ll.data[7] = vmod; _ll.data[8] = SLOP_STR("' ("); _ll.data[9] = v.enum_name; _ll.data[10] = SLOP_STR(")"); _ll; })), line, col);
                                     }
                                 }
                             }
@@ -895,7 +895,7 @@ void type_env_env_check_variant_collisions(type_env_TypeEnv* env) {
                             }
                         }
                         if (found_collision) {
-                            type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 6 * sizeof(slop_string)), .len = 6, .cap = 6, .arena = arena }; _ll.data[0] = SLOP_STR("Ambiguous enum variant '"); _ll.data[1] = v1.variant_name; _ll.data[2] = SLOP_STR("' exists in multiple types: "); _ll.data[3] = v1.enum_name; _ll.data[4] = SLOP_STR(", "); _ll.data[5] = collision_enum; _ll; })), 0, 0);
+                            type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 6 * sizeof(slop_string)), .len = 6, .cap = 6, .arena = arena }; _ll.data[0] = SLOP_STR("Ambiguous enum variant '"); _ll.data[1] = v1.variant_name; _ll.data[2] = SLOP_STR("' exists in multiple types: "); _ll.data[3] = v1.enum_name; _ll.data[4] = SLOP_STR(", "); _ll.data[5] = collision_enum; _ll; })), 0, 0);
                         }
                     }
                 }
@@ -1129,7 +1129,7 @@ slop_string type_env_env_range_label(type_env_TypeEnv* env, types_ResolvedType* 
         if (string_eq(name, SLOP_STR("Int"))) {
             return types_range_to_string(arena, bounds);
         } else {
-            return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = name; _ll.data[1] = SLOP_STR(" "); _ll.data[2] = types_range_to_string(arena, bounds); _ll; }));
+            return std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = name; _ll.data[1] = SLOP_STR(" "); _ll.data[2] = types_range_to_string(arena, bounds); _ll; }));
         }
     }
 }
@@ -1148,10 +1148,10 @@ void type_env_env_check_range_narrowing(type_env_TypeEnv* env, slop_string conte
                 __auto_type arena = type_env_env_arena(env);
                 if (types_range_is_constant(value_range)) {
                     if (!(types_range_contains(target_range, value_range.min_val))) {
-                        type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = int_to_string(arena, ((int64_t)(value_range.min_val))); _ll.data[3] = SLOP_STR(" is outside "); _ll.data[4] = type_env_env_range_label(env, target, target_range); _ll; })), line, col);
+                        type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = int_to_string(arena, ((int64_t)(value_range.min_val))); _ll.data[3] = SLOP_STR(" is outside "); _ll.data[4] = type_env_env_range_label(env, target, target_range); _ll; })), line, col);
                     }
                 } else if (types_range_disjoint(target_range, value_range)) {
-                    type_env_env_add_warning(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = SLOP_STR("value is always outside "); _ll.data[3] = type_env_env_range_label(env, target, target_range); _ll.data[4] = SLOP_STR(" (it is "); _ll.data[5] = types_range_describe_values(arena, value_range); _ll.data[6] = SLOP_STR("); this aborts at run time"); _ll; })), line, col);
+                    type_env_env_add_warning(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = SLOP_STR("value is always outside "); _ll.data[3] = type_env_env_range_label(env, target, target_range); _ll.data[4] = SLOP_STR(" (it is "); _ll.data[5] = types_range_describe_values(arena, value_range); _ll.data[6] = SLOP_STR("); this aborts at run time"); _ll; })), line, col);
                 } else {
                 }
             }

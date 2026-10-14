@@ -1,8 +1,9 @@
 # Native SLOP Transpiler
 # Build with: uv run slop build (from this directory)
 
+# No [project] name: the toolchain's modules keep unqualified C names
+# (<module>_<name>). A name here would qualify them (#360).
 [project]
-name = "slop-checker"
 version = "0.1.0"
 entry = "main.slop"
 

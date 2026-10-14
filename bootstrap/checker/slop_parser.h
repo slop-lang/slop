@@ -2,6 +2,11 @@
 #define SLOP_parser_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -121,9 +126,9 @@ uint8_t parser_number_text_is_float(slop_string s);
 slop_string parser_string_copy(slop_arena* arena, slop_string s);
 parser_LexerState parser_lexer_new(slop_string source);
 uint8_t parser_lexer_at_end(parser_LexerState* state);
-strlib_Byte parser_lexer_peek(parser_LexerState* state);
-strlib_Byte parser_lexer_peek_at(parser_LexerState* state, int64_t offset);
-strlib_Byte parser_lexer_peek_next(parser_LexerState* state);
+std_strlib_Byte parser_lexer_peek(parser_LexerState* state);
+std_strlib_Byte parser_lexer_peek_at(parser_LexerState* state, int64_t offset);
+std_strlib_Byte parser_lexer_peek_next(parser_LexerState* state);
 void parser_lexer_advance(parser_LexerState* state);
 void parser_lexer_skip_whitespace(parser_LexerState* state);
 void parser_lexer_skip_comment(parser_LexerState* state);

@@ -1,0 +1,8 @@
+;; No slop.toml with a [project] name above this file: its C names stay
+;; engine_<name>, as before packages existed.
+(module engine
+  (export run)
+  (fn run ((x Int))
+    (@intent "Identity")
+    (@spec ((Int) -> Int))
+    x))

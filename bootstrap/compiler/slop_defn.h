@@ -2,6 +2,11 @@
 #define SLOP_defn_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -87,7 +92,7 @@ slop_string defn_get_slop_return_type(context_TranspileContext* ctx, slop_list_t
 slop_option_string defn_get_result_type_name(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_option_string defn_extract_result_type_name(context_TranspileContext* ctx, types_SExpr* spec_expr);
 slop_option_string defn_check_result_type(context_TranspileContext* ctx, types_SExpr* type_expr);
-slop_string defn_build_result_name(slop_arena* arena, slop_string ok_type, slop_string err_type);
+slop_string defn_build_result_name(context_TranspileContext* ctx, slop_string ok_type, slop_string err_type);
 slop_string defn_build_param_str(context_TranspileContext* ctx, types_SExpr* params_expr);
 slop_string defn_build_single_param(context_TranspileContext* ctx, types_SExpr* param);
 uint8_t defn_is_param_mode(slop_list_types_SExpr_ptr items);
