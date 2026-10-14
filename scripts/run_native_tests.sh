@@ -270,6 +270,36 @@ run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
     -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib"
 
 # ============================================================
+# Generated C and the runtime header must be warning-free (#361): a
+# list-set whose Bool is discarded is cast to void, and the runtime header
+# gives gcc no inline function with noinline.
+WF="$REPO_ROOT/tests/warning-free"
+WF_BUILD="$BUILD_DIR/warning-free"
+rm -rf "$WF_BUILD"
+mkdir -p "$WF_BUILD"
+echo -n "Testing warning-free-list-set... "
+wf_output=$( (uv run slop transpile "$WF/list_set_stmt.slop" -o "$WF_BUILD/list_set_stmt.c" \
+    && cc -Wall -Werror=unused-value -I "$RUNTIME_DIR" -c -o "$WF_BUILD/list_set_stmt.o" "$WF_BUILD/list_set_stmt.c" \
+    && uv run slop build "$WF/list_set_stmt.slop" -o "$WF_BUILD/list_set_stmt" \
+    && "$WF_BUILD/list_set_stmt") 2>&1 )
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "$wf_output"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+echo -n "Testing warning-free-runtime-header... "
+if wf_output=$(cc -Wall -Werror=attributes -I "$RUNTIME_DIR" -c -o "$WF_BUILD/runtime_only.o" "$WF/runtime_only.c" 2>&1); then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "$wf_output"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 # Package-qualified C names and the runtime ABI (#360)
 # ============================================================
 # Two libraries, pkg-a and pkg-b, each have a module named engine that

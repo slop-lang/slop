@@ -1463,7 +1463,7 @@ slop_list_string expr_split_top_level_types(slop_arena* arena, slop_string s) {
                     paren_depth = (paren_depth - 1);
                 } else if ((c == 32) && (paren_depth == 0)) {
                     if (token_start < i) {
-                        ({ __auto_type _lst_p = &(out); __auto_type _item = (std_strlib_substring(arena, s, ((int64_t)(SLOP_RANGE(int64_t, token_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1039:70"))), ((int64_t)(SLOP_RANGE(int64_t, (i - token_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1039:100"))))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                        (void)(({ __auto_type _lst_p = &(out); __auto_type _item = (std_strlib_substring(arena, s, ((int64_t)(SLOP_RANGE(int64_t, token_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1039:70"))), ((int64_t)(SLOP_RANGE(int64_t, (i - token_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:1039:100"))))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; }));
                     }
                     token_start = (i + 1);
                 } else {

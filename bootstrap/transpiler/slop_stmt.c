@@ -34,6 +34,7 @@ void stmt_transpile_for_each(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string stmt_transpile_loop_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
 void stmt_transpile_loop_exit(context_TranspileContext* ctx, types_SExpr* expr, slop_string op);
 void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_return);
+void stmt_emit_expr_stmt(context_TranspileContext* ctx, types_SExpr* expr);
 void stmt_emit_typed_return_expr(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string stmt_current_return_c_type(context_TranspileContext* ctx);
 void stmt_emit_return_with_typed_none(context_TranspileContext* ctx, slop_string code);
@@ -1839,9 +1840,7 @@ void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8
                                         if (is_return) {
                                             stmt_emit_typed_return_expr(ctx, expr);
                                         } else {
-                                            if (!(string_eq(parser_sexpr_get_symbol_name(expr), SLOP_STR("unit")))) {
-                                                context_ctx_emit(ctx, context_ctx_str(ctx, expr_transpile_expr(ctx, expr), SLOP_STR(";")));
-                                            }
+                                            stmt_emit_expr_stmt(ctx, expr);
                                         }
                                     }
                                 }
@@ -1851,9 +1850,7 @@ void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8
                                 if (is_return) {
                                     stmt_emit_typed_return_expr(ctx, expr);
                                 } else {
-                                    if (!(string_eq(parser_sexpr_get_symbol_name(expr), SLOP_STR("unit")))) {
-                                        context_ctx_emit(ctx, context_ctx_str(ctx, expr_transpile_expr(ctx, expr), SLOP_STR(";")));
-                                    }
+                                    stmt_emit_expr_stmt(ctx, expr);
                                 }
                                 break;
                             }
@@ -1869,11 +1866,24 @@ void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8
             if (is_return) {
                 stmt_emit_typed_return_expr(ctx, expr);
             } else {
-                if (!(string_eq(parser_sexpr_get_symbol_name(expr), SLOP_STR("unit")))) {
-                    context_ctx_emit(ctx, context_ctx_str(ctx, expr_transpile_expr(ctx, expr), SLOP_STR(";")));
-                }
+                stmt_emit_expr_stmt(ctx, expr);
             }
             break;
+        }
+    }
+}
+
+void stmt_emit_expr_stmt(context_TranspileContext* ctx, types_SExpr* expr) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    SLOP_PRE(((expr != NULL)), "(!= expr nil)");
+    if (!(string_eq(parser_sexpr_get_symbol_name(expr), SLOP_STR("unit")))) {
+        {
+            __auto_type code = expr_transpile_expr(ctx, expr);
+            if (std_strlib_starts_with(code, SLOP_STR("({"))) {
+                context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("(void)("), code, SLOP_STR(");")));
+            } else {
+                context_ctx_emit(ctx, context_ctx_str(ctx, code, SLOP_STR(";")));
+            }
         }
     }
 }

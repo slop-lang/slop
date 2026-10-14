@@ -205,7 +205,7 @@ uint8_t tester_main_collect_args(slop_arena* arena, int64_t argc, uint8_t** argv
                     }
                     i = (i + 2);
                 } else {
-                    ({ __auto_type _lst_p = &((*files)); __auto_type _item = (i); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                    (void)(({ __auto_type _lst_p = &((*files)); __auto_type _item = (i); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; }));
                     i = (i + 1);
                 }
             }
