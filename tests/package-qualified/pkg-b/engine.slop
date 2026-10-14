@@ -1,0 +1,18 @@
+;; The other library's engine module: same module name, same function and
+;; type names, a different package (#360).
+(module engine
+  (export run Rule)
+
+  (type Rule (record (weight Int) (bonus Int)))
+
+  (fn run ((r Rule))
+    (@intent "pkg-b's rule: weight plus bonus")
+    (@spec ((Rule) -> Int))
+    (@example ((Rule 40 2)) -> 42)
+    (+ (. r weight) (. r bonus)))
+
+  (fn public-entry ((x Int))
+    (@intent "A :c-name is emitted exactly as written, package or not")
+    (@spec ((Int) -> Int))
+    (+ x 2)
+    :c-name "engine_entry_b"))

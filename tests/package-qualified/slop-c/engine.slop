@@ -1,0 +1,42 @@
+;; A package named slop-c, so its types are slop_c_engine_Rule: names that
+;; start with slop_ like the runtime's own. The transpiler must still treat
+;; them as user types, emitting their List/Option/Result containers and
+;; ordering their definitions, here and in the module that imports them.
+(module engine
+  (export Rule make-rules first-heavy weigh)
+
+  (type Rule (record (weight Int)))
+
+  (fn make-rules ((arena Arena) (n Int))
+    (@intent "n rules of weight 1 .. n")
+    (@spec ((Arena Int) -> (List Rule)))
+    (let ((mut rules (list Rule))
+          (mut i 0))
+      (while (< i n)
+        (list-push rules (Rule (+ i 1)))
+        (set! i (+ i 1)))
+      rules))
+
+  (fn is-heavy ((rules (List Rule)) (i Int))
+    (@intent "Whether the rule at i weighs more than 2")
+    (@spec (((List Rule) Int) -> Bool))
+    (match (list-get rules i)
+      ((some r) (> (. r weight) 2))
+      ((none) false)))
+
+  (fn first-heavy ((rules (List Rule)))
+    (@intent "The first rule weighing more than 2, if any")
+    (@spec (((List Rule)) -> (Option Rule)))
+    (let ((len (list-len rules))
+          (mut i 0))
+      (while (and (< i len) (not (is-heavy rules i)))
+        (set! i (+ i 1)))
+      (list-get rules i)))
+
+  (fn weigh ((r Rule))
+    (@intent "The weight, or an error for a weightless rule")
+    (@spec ((Rule) -> (Result Int String)))
+    (@example ((Rule 3)) -> (ok 3))
+    (if (== (. r weight) 0)
+      (error "weightless")
+      (ok (. r weight)))))

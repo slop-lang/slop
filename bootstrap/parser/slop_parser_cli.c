@@ -95,7 +95,7 @@ int main(int argc, char** _c_argv) {
                 }
                 {
                     __auto_type path = parser_cli_argv_to_string(argv, file_idx);
-                    __auto_type _mv_74 = file_file_open(path, file_FileMode_read);
+                    __auto_type _mv_74 = std_file_file_open(path, std_file_FileMode_read);
                     if (!_mv_74.is_ok) {
                         __auto_type e = _mv_74.data.err;
                         printf("%s", "Error: Could not open file: ");
@@ -107,10 +107,10 @@ int main(int argc, char** _c_argv) {
                         }
                     } else if (_mv_74.is_ok) {
                         __auto_type f = _mv_74.data.ok;
-                        __auto_type _mv_75 = file_file_read_all(arena, (&f));
+                        __auto_type _mv_75 = std_file_file_read_all(arena, (&f));
                         if (!_mv_75.is_ok) {
                             __auto_type e = _mv_75.data.err;
-                            file_file_close((&f));
+                            std_file_file_close((&f));
                             printf("%s\n", "Error: Could not read file");
                             {
                                 int _wa_ret = 1;
@@ -119,7 +119,7 @@ int main(int argc, char** _c_argv) {
                             }
                         } else if (_mv_75.is_ok) {
                             __auto_type source = _mv_75.data.ok;
-                            file_file_close((&f));
+                            std_file_file_close((&f));
                             __auto_type _mv_76 = parser_parse(arena, source);
                             if (!_mv_76.is_ok) {
                                 __auto_type e = _mv_76.data.err;

@@ -149,7 +149,7 @@ slop_option_string resolve_resolve_import_target(type_env_TypeEnv* env, slop_str
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = type_env_env_arena(env);
-        __auto_type qualified = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }));
+        __auto_type qualified = std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }));
         if ((({ __auto_type _mv = type_env_env_lookup_type_qualified(env, src, name); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (({ __auto_type _mv = type_env_env_lookup_function_direct(env, qualified); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (type_env_env_lookup_constant_in_module(env, src, name))) {
             return (slop_option_string){.has_value = 1, .value = qualified};
         } else {
@@ -172,25 +172,25 @@ void resolve_resolve_import_name(type_env_TypeEnv* env, resolve_ImportSite site)
             if (_mv_132.has_value) {
                 __auto_type prev = _mv_132.value;
                 if (!(string_eq(prev, target))) {
-                    type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is imported from both '"); _ll.data[3] = resolve_qualified_module_part(arena, prev); _ll.data[4] = SLOP_STR("' and '"); _ll.data[5] = src; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                    type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is imported from both '"); _ll.data[3] = resolve_qualified_module_part(arena, prev); _ll.data[4] = SLOP_STR("' and '"); _ll.data[5] = src; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
                 }
             } else if (!_mv_132.has_value) {
             }
             type_env_env_add_import(env, local_name, target);
         } else if (!_mv_131.has_value) {
             if (!(resolve_contains_slash(src))) {
-                type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("module '"); _ll.data[1] = src; _ll.data[2] = SLOP_STR("' does not export '"); _ll.data[3] = local_name; _ll.data[4] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("module '"); _ll.data[1] = src; _ll.data[2] = SLOP_STR("' does not export '"); _ll.data[3] = local_name; _ll.data[4] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
             }
-            type_env_env_add_import(env, local_name, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; })));
+            type_env_env_add_import(env, local_name, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; })));
         }
     }
 }
 
 slop_string resolve_qualified_module_part(slop_arena* arena, slop_string qualified) {
-    __auto_type _mv_133 = strlib_index_of(qualified, SLOP_STR(":"));
+    __auto_type _mv_133 = std_strlib_index_of(qualified, SLOP_STR(":"));
     if (_mv_133.has_value) {
         __auto_type idx = _mv_133.value;
-        return strlib_substring(arena, qualified, 0, idx);
+        return std_strlib_substring(arena, qualified, 0, idx);
     } else if (!_mv_133.has_value) {
         return qualified;
     }
@@ -212,10 +212,10 @@ void resolve_check_import_shadowing(type_env_TypeEnv* env, slop_list_types_SExpr
                     __auto_type site = _mv_135.value;
                     {
                         __auto_type local_name = site.name;
-                        __auto_type own = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = cur; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; }));
+                        __auto_type own = std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = cur; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; }));
                         __auto_type imported_own = ({ __auto_type _mv = type_env_env_resolve_import(env, local_name); _mv.has_value ? ({ __auto_type q = _mv.value; string_eq(q, own); }) : (0); });
                         if ((!(imported_own)) && (({ __auto_type _mv = resolve_resolve_import_target(env, site.source, local_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) && (((({ __auto_type _mv = type_env_env_lookup_type_qualified(env, cur, local_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (({ __auto_type _mv = type_env_env_lookup_function_direct(env, own); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (type_env_env_lookup_constant_in_module(env, cur, local_name))))) {
-                            type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = site.source; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(site.name_expr), parser_sexpr_col(site.name_expr));
+                            type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = site.source; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(site.name_expr), parser_sexpr_col(site.name_expr));
                         }
                     }
                 } else if (!_mv_135.has_value) {
@@ -247,10 +247,10 @@ slop_option_string resolve_resolve_module_file(slop_arena* arena, slop_string mo
         if (_mv_136.has_value) {
             __auto_type current_path = _mv_136.value;
             {
-                __auto_type dir = path_path_dirname(arena, current_path);
+                __auto_type dir = std_path_path_dirname(arena, current_path);
                 __auto_type rel_path = string_concat(arena, module_name, SLOP_STR(".slop"));
-                __auto_type full_path = path_path_join(arena, dir, rel_path);
-                if (file_file_exists(full_path)) {
+                __auto_type full_path = std_path_path_join(arena, dir, rel_path);
+                if (std_file_file_exists(full_path)) {
                     return (slop_option_string){.has_value = 1, .value = full_path};
                 } else {
                     return (slop_option_string){.has_value = false};

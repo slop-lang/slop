@@ -269,6 +269,113 @@ run_lib_test "$REPO_ROOT/lib/std/json/tests/json_test.slop" "json" \
 run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
     -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib"
 
+# ============================================================
+# Package-qualified C names and the runtime ABI (#360)
+# ============================================================
+# Two libraries, pkg-a and pkg-b, each have a module named engine that
+# defines run and Rule. Each builds to a static library, and one C program
+# links both: the package qualifier keeps pkg_a_engine_run apart from
+# pkg_b_engine_run, while the :c-name functions come out exactly as written.
+PQ="$REPO_ROOT/tests/package-qualified"
+PQ_BUILD="$BUILD_DIR/package-qualified"
+rm -rf "$PQ_BUILD"
+mkdir -p "$PQ_BUILD/a" "$PQ_BUILD/b"
+echo -n "Testing package-qualified-link... "
+pq_output=$( (uv run slop build "$PQ/pkg-a/engine.slop" --library static -o "$PQ_BUILD/a/libpkga" \
+    && uv run slop build "$PQ/pkg-b/engine.slop" --library static -o "$PQ_BUILD/b/libpkgb" \
+    && cc -I "$RUNTIME_DIR" -o "$PQ_BUILD/link_both" "$PQ/link_both.c" \
+        "$PQ_BUILD/a/libpkga.a" "$PQ_BUILD/b/libpkgb.a" -lm \
+    && "$PQ_BUILD/link_both") 2>&1 )
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "$pq_output"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+# An executable in pkg-a importing its engine and, through it, the std
+# library: every call site emits the qualified name its module defines
+run_lib_test "$PQ/pkg-a/main.slop" "package-qualified-exe" -I "$PQ/pkg-a"
+
+# A package named slop-c: its types start with slop_ like the runtime's own,
+# and the transpiler must still emit and order them, and their containers, as
+# user types on both sides of an import
+run_lib_test "$PQ/slop-c/main.slop" "package-qualified-slop-prefix" -I "$PQ/slop-c"
+
+# What the names are: qualified by the package when the module has one, by
+# the module alone when it has none, and a :c-name untouched either way
+echo -n "Testing package-qualified-names... "
+pq_problem=""
+pq_a=$(uv run slop transpile "$PQ/pkg-a/engine.slop" 2>&1)
+pq_none=$(uv run slop transpile "$PQ/unpackaged/engine.slop" 2>&1)
+pq_c=$(uv run slop transpile "$PQ/slop-c/engine.slop" 2>&1)
+if ! echo "$pq_a" | grep -q "^int64_t pkg_a_engine_run(pkg_a_engine_Rule r)"; then
+    pq_problem="expected pkg_a_engine_run(pkg_a_engine_Rule r)"
+elif ! echo "$pq_a" | grep -q "std_strlib_trim("; then
+    pq_problem="expected the std library's trim to be std_strlib_trim"
+elif ! echo "$pq_a" | grep -q "^int64_t engine_entry_a(int64_t x)"; then
+    pq_problem="expected the :c-name engine_entry_a as written"
+elif echo "$pq_a" | grep -q "^int64_t pkg_a_engine_public_entry(\|^int64_t pkg_a_engine_entry_a("; then
+    pq_problem="a :c-name function must be defined under its :c-name only"
+elif ! echo "$pq_none" | grep -q "^int64_t engine_run(int64_t x)"; then
+    pq_problem="expected engine_run for a module in no package"
+elif ! echo "$pq_c" | grep -q "^slop_option_slop_c_engine_Rule slop_c_engine_first_heavy(slop_list_slop_c_engine_Rule rules)"; then
+    pq_problem="expected the containers of a slop-c type to keep its slop_c_ prefix"
+fi
+if [ -z "$pq_problem" ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC} ($pq_problem)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+# The number the transpiler writes into every module's ABI check must be the
+# number in slop_runtime.h
+echo -n "Testing runtime-abi-in-sync... "
+if abi_output=$("$REPO_ROOT/scripts/check_runtime_abi.sh" 2>&1); then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "$abi_output"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
+# Generated C compiled against a runtime header of another ABI must fail to
+# compile, whether that header has a different SLOP_RUNTIME_ABI or none
+echo -n "Testing runtime-abi-mismatch (expected to fail)... "
+ABI_DIR="$BUILD_DIR/runtime-abi"
+rm -rf "$ABI_DIR"
+mkdir -p "$ABI_DIR/newer" "$ABI_DIR/older"
+abi_problem=""
+if ! uv run slop transpile "$PQ/pkg-b/engine.slop" -o "$ABI_DIR/engine.c" >/dev/null 2>&1; then
+    abi_problem="could not transpile the fixture"
+else
+    sed 's/^#define SLOP_RUNTIME_ABI [0-9]*$/#define SLOP_RUNTIME_ABI 999999/' "$RUNTIME_DIR/slop_runtime.h" > "$ABI_DIR/newer/slop_runtime.h"
+    sed '/^#define SLOP_RUNTIME_ABI [0-9]*$/d' "$RUNTIME_DIR/slop_runtime.h" > "$ABI_DIR/older/slop_runtime.h"
+    if cc -c -I "$ABI_DIR/newer" -o "$ABI_DIR/x.o" "$ABI_DIR/engine.c" >"$ABI_DIR/newer.log" 2>&1; then
+        abi_problem="compiled against a header of another ABI"
+    elif ! grep -q "SLOP_RUNTIME_ABI differs" "$ABI_DIR/newer.log"; then
+        abi_problem="expected the ABI mismatch to be named"
+    elif cc -c -I "$ABI_DIR/older" -o "$ABI_DIR/x.o" "$ABI_DIR/engine.c" >"$ABI_DIR/older.log" 2>&1; then
+        abi_problem="compiled against a header with no ABI version"
+    elif ! grep -q "predates runtime ABI versioning" "$ABI_DIR/older.log"; then
+        abi_problem="expected the missing ABI version to be named"
+    elif ! cc -c -I "$RUNTIME_DIR" -o "$ABI_DIR/x.o" "$ABI_DIR/engine.c" >"$ABI_DIR/same.log" 2>&1; then
+        abi_problem="did not compile against the matching header"
+    fi
+fi
+if [ -z "$abi_problem" ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC} ($abi_problem)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 # The same suite with contracts compiled in. xml's @post matches on $result and
 # reads a field of the (Ptr Document) it binds, which is the shape that made
 # --debug unbuildable for anything importing xml (#80). Contracts are no-ops in

@@ -2,6 +2,11 @@
 #define SLOP_context_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -68,6 +73,17 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #ifndef SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
 #define SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
 SLOP_OPTION_DEFINE(context_Scope*, slop_option_context_Scope_ptr)
+#endif
+
+#ifndef SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_IMPL_DEFINED
+SLOP_LIST_DEFINE(ctype_ModulePackage, slop_list_ctype_ModulePackage)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 #ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
@@ -498,6 +514,7 @@ struct context_TranspileContext {
     int64_t pos_line;
     int64_t pos_col;
     slop_list_string reported_ambiguities;
+    slop_list_ctype_ModulePackage module_packages;
 };
 typedef struct context_TranspileContext context_TranspileContext;
 
@@ -626,6 +643,12 @@ slop_option_string context_ctx_get_module(context_TranspileContext* ctx);
 void context_ctx_set_prefixing(context_TranspileContext* ctx, uint8_t enabled);
 uint8_t context_ctx_prefixing_enabled(context_TranspileContext* ctx);
 slop_string context_ctx_prefix_type(context_TranspileContext* ctx, slop_string type_name);
+void context_ctx_add_module_package(context_TranspileContext* ctx, slop_string mod_name, slop_string package);
+slop_option_string context_ctx_module_package(context_TranspileContext* ctx, slop_string mod_name);
+slop_list_ctype_ModulePackage context_ctx_get_module_packages(context_TranspileContext* ctx);
+slop_string context_ctx_module_c_prefix(context_TranspileContext* ctx, slop_string mod_name);
+slop_string context_ctx_type_id(context_TranspileContext* ctx, slop_string c_type);
+uint8_t context_ctx_is_package_type(context_TranspileContext* ctx, slop_string c_type);
 void context_ctx_add_include(context_TranspileContext* ctx, slop_string header);
 slop_list_string context_ctx_get_includes(context_TranspileContext* ctx);
 void context_ctx_mark_type_emitted(context_TranspileContext* ctx, slop_string type_name);
@@ -875,6 +898,11 @@ SLOP_OPTION_DEFINE(context_InlineRecord, slop_option_context_InlineRecord)
 #ifndef SLOP_OPTION_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
 #define SLOP_OPTION_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
 SLOP_OPTION_DEFINE(context_GenericFuncInstantiation, slop_option_context_GenericFuncInstantiation)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED

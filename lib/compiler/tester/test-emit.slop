@@ -25,8 +25,8 @@
                         registry-lookup-import
                         registry-is-union registry-is-record registry-is-enum
                         registry-get-variant-info registry-get-record-fields))
-  (import ctype (to-c-name))
-  (import context (TranspileContext context-new ctx-set-module ctx-get-module ctx-set-prefixing
+  (import ctype (to-c-name ModulePackage module-c-prefix))
+  (import context (TranspileContext context-new ctx-set-module ctx-get-module ctx-set-prefixing ctx-add-module-package
                    ctx-push-scope ctx-bind-var VarEntry ctx-register-field-type
                    ctx-prefixing-enabled ctx-prefix-type to-c-type-prefixed
                    ctx-set-single-output-mode ctx-set-skip-trampoline-generation
@@ -235,7 +235,7 @@
       "test_arena"
       (match (registry-lookup-import types name)
         ((some mod-name)
-          (string-concat arena (to-c-name arena mod-name)
+          (string-concat arena (module-c-prefix arena (. types packages) mod-name)
             (string-concat arena "_" (to-c-name arena name))))
         ((none)
           (if (> (cast Int (. prefix len)) 0)
@@ -758,7 +758,7 @@
     (@pre {types != nil})
     (let ((arena (. (deref ctx) arena))
           (fn-name (. tc fn-name))
-          (c-fn-name (make-c-fn-name arena fn-name (. tc module-name) prefix))
+          (c-fn-name (make-c-fn-name arena fn-name (. tc module-name) prefix (. (deref types) packages)))
           (args-display (build-args-display-typed arena (. tc args) (deref types)))
           (call-sexpr (build-call-sexpr arena fn-name (. tc args)
                         (. tc needs-arena) (. tc arena-position)))
@@ -895,14 +895,15 @@
   ;; Helper Functions for Test Generation
   ;; ============================================================
 
-  (fn make-c-fn-name ((arena Arena) (fn-name String) (module-name (Option String)) (prefix String))
+  (fn make-c-fn-name ((arena Arena) (fn-name String) (module-name (Option String)) (prefix String)
+                      (packages (List ModulePackage)))
     (@intent "Build C function name with module prefix if needed")
-    (@spec ((Arena String (Option String) String) -> String))
+    (@spec ((Arena String (Option String) String (List ModulePackage)) -> String))
     (@alloc arena)
     (let ((c-name (to-c-name arena fn-name)))
       (match module-name
         ((some mod)
-          (string-concat arena (to-c-name arena mod)
+          (string-concat arena (module-c-prefix arena packages mod)
             (string-concat arena "_" c-name)))
         ((none)
           (if (> (cast Int (. prefix len)) 0)
@@ -1992,7 +1993,7 @@
       (match (registry-lookup-import types type-name)
         ((some mod-name)
           (let ((parts (list-new arena String)))
-            (list-push parts (to-c-name arena mod-name))
+            (list-push parts (module-c-prefix arena (. types packages) mod-name))
             (list-push parts "_")
             (list-push parts type-c)
             (list-push parts "_eq")
@@ -2140,11 +2141,22 @@
   ;; TranspileContext Initialization
   ;; ============================================================
 
-  (fn init-transpile-context ((arena Arena) (ast (List (Ptr SExpr))) (module-name String))
+  (fn init-transpile-context ((arena Arena) (ast (List (Ptr SExpr))) (module-name String)
+                              (packages (List ModulePackage)))
     (@intent "Create and initialize a TranspileContext from parsed module AST")
-    (@spec ((Arena (List (Ptr SExpr)) String) -> (Ptr TranspileContext)))
+    (@spec ((Arena (List (Ptr SExpr)) String (List ModulePackage)) -> (Ptr TranspileContext)))
     (@alloc arena)
     (let ((tctx (context-new arena)))
+      ;; The same module-to-package table the transpiler was given, so the
+      ;; harness calls functions by the names the module code defines (#360)
+      (let ((pkg-count (list-len packages))
+            (mut p 0))
+        (while (< p pkg-count)
+          (match (list-get packages p)
+            ((some entry)
+              (ctx-add-module-package tctx (. entry module-name) (. entry package)))
+            ((none) (do)))
+          (set! p (+ p 1))))
       ;; Enable single-output mode since test harness compiles all modules to one .c file
       (ctx-set-single-output-mode tctx true)
       ;; Skip trampoline generation - trampolines are already in the transpiled module code

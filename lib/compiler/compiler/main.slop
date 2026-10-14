@@ -37,12 +37,13 @@
                    ctx-get-output ctx-get-header ctx-set-prefixing
                    ctx-set-file ctx-has-errors ctx-report-errors
                    ctx-has-warnings ctx-report-warnings
-                   ctx-set-single-output-mode))
-  (import transpiler (transpile-file))
+                   ctx-set-single-output-mode ctx-add-module-package))
+  (import transpiler (transpile-file runtime-abi))
   ;; --- I/O imports ---
   (import file (FileMode FileError File
                 file-open file-close file-read-all))
   (import strlib (cstring-to-string))
+  (import ctype (parse-module-package))
 
   ;; FFI for stdio
   (ffi "stdio.h"
@@ -884,6 +885,35 @@
                       1))))))))))
 
   ;; ============================================================
+  ;; --package flags (#360)
+  ;; ============================================================
+
+  (fn register-package-flags ((arena Arena) (ctx (Ptr TranspileContext)) (argc Int) (argv (Ptr (Ptr U8))) (start Int))
+    (@intent "Record every --package MODULE=NAME flag in the context; false, with the error printed, if one is malformed")
+    (@spec ((Arena (Ptr TranspileContext) Int (Ptr (Ptr U8)) Int) -> Bool))
+    (@pre (!= ctx nil))
+    (let ((mut i start)
+          (mut ok true))
+      (while (< i argc)
+        (if (string-eq (argv-to-string argv i) "--package")
+          (do
+            (if (< (+ i 1) argc)
+              (match (parse-module-package arena (argv-to-string argv (+ i 1)))
+                ((some entry)
+                  (ctx-add-module-package ctx (. entry module-name) (. entry package)))
+                ((none)
+                  (do
+                    (print "Error: --package expects MODULE=NAME, got: ")
+                    (println (argv-to-string argv (+ i 1)))
+                    (set! ok false))))
+              (do
+                (println "Error: --package expects MODULE=NAME")
+                (set! ok false)))
+            (set! i (+ i 2)))
+          (set! i (+ i 1))))
+      ok))
+
+  ;; ============================================================
   ;; Main - CLI Entry Point
   ;; ============================================================
 
@@ -893,6 +923,12 @@
     (when (>= argc 2)
       (when (string-eq (argv-to-string argv 1) "--version")
         (println "slop-compiler 0.4.3")
+        (return 0))
+      ;; The build scripts compile this compiler's output against the runtime
+      ;; header of the ABI it generates for (scripts/build_native.sh)
+      (when (string-eq (argv-to-string argv 1) "--runtime-abi")
+        (with-arena 256
+          (println (int-to-string arena (runtime-abi))))
         (return 0)))
     (if (< argc 2)
       (do
@@ -901,7 +937,7 @@
         (println "Commands:")
         (println "  check [--json] [--expr EXPR --type TYPE] <files...>")
         (println "  typed-ast [--json] <files...>")
-        (println "  transpile <files...>")
+        (println "  transpile [--package MODULE=NAME ...] <files...>")
         1)
       (let ((cmd (argv-to-string argv 1)))
         (cond
@@ -973,7 +1009,7 @@
           ((string-eq cmd "transpile")
             (if (< argc 3)
               (do
-                (println "Usage: slop-compiler transpile <file.slop> [file2.slop ...]")
+                (println "Usage: slop-compiler transpile [--package MODULE=NAME ...] <file.slop> [file2.slop ...]")
                 1)
               (with-arena 16777216
                 (let ((env (env-new arena))
@@ -982,20 +1018,30 @@
                   ;; NOTE: Don't enable single-output-mode here. The Python CLI
                   ;; handles trampoline deduplication when combining modules.
                   ;; In library mode, each module needs its own trampolines.
-                  (putchar 123)
-                  (let ((mut i 2)
-                        (mut first true)
-                        (mut had-error false))
-                    (while (< i argc)
-                      (let ((filename (@ argv i))
-                            (result (transpile-single-file env ctx arena filename first)))
-                        (when (!= result 0)
-                          (set! had-error true))
-                        (set! first false))
-                      (set! i (+ i 1)))
-                    (putchar 125)
-                    (putchar 10)
-                    (if had-error 1 0))))))
+                  ;; Every --package MODULE=NAME is recorded before any file is
+                  ;; transpiled (#360): an import then resolves to its module's
+                  ;; package whether that module comes later on the command line
+                  ;; or is not transpiled in this run at all.
+                  (if (not (register-package-flags arena ctx argc argv 2))
+                    1
+                    (do
+                      (putchar 123)
+                      (let ((mut i 2)
+                            (mut first true)
+                            (mut had-error false))
+                        (while (< i argc)
+                          (if (string-eq (argv-to-string argv i) "--package")
+                            (set! i (+ i 2))
+                            (do
+                              (let ((filename (@ argv i))
+                                    (result (transpile-single-file env ctx arena filename first)))
+                                (when (!= result 0)
+                                  (set! had-error true))
+                                (set! first false))
+                              (set! i (+ i 1)))))
+                        (putchar 125)
+                        (putchar 10)
+                        (if had-error 1 0))))))))
 
           ;; ---- TYPED-AST MODE ----
           ((string-eq cmd "typed-ast")

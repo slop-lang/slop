@@ -2,10 +2,16 @@
 #define SLOP_type_extract_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
 #include "slop_parser.h"
+#include "slop_ctype.h"
 
 typedef struct type_extract_TstFieldEntry type_extract_TstFieldEntry;
 typedef struct type_extract_VariantEntry type_extract_VariantEntry;
@@ -42,6 +48,17 @@ SLOP_OPTION_DEFINE(type_extract_TstTypeEntry*, slop_option_type_extract_TstTypeE
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
+#ifndef SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_IMPL_DEFINED
+SLOP_LIST_DEFINE(ctype_ModulePackage, slop_list_ctype_ModulePackage)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 struct type_extract_TstFieldEntry {
@@ -138,6 +155,7 @@ struct type_extract_TypeRegistry {
     slop_list_type_extract_TstTypeEntry_ptr types;
     slop_string module_prefix;
     slop_list_type_extract_ImportEntry import_entries;
+    slop_list_ctype_ModulePackage packages;
 };
 typedef struct type_extract_TypeRegistry type_extract_TypeRegistry;
 
@@ -147,14 +165,14 @@ SLOP_OPTION_DEFINE(type_extract_TypeRegistry, slop_option_type_extract_TypeRegis
 #endif
 
 type_extract_TypeRegistry type_extract_make_type_registry(slop_arena* arena, slop_string prefix);
-type_extract_TypeRegistry type_extract_make_type_registry_with_imports(slop_arena* arena, slop_string prefix, slop_list_type_extract_ImportEntry imports);
+type_extract_TypeRegistry type_extract_make_type_registry_with_imports(slop_arena* arena, slop_string prefix, slop_list_type_extract_ImportEntry imports, slop_list_ctype_ModulePackage packages);
 void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry* reg, type_extract_TstTypeEntry* entry);
 type_extract_TstTypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TstTypeEntryKind kind);
 type_extract_TstFieldEntry type_extract_field_entry_new(slop_string name, slop_string type_name);
 type_extract_VariantEntry type_extract_variant_entry_new(slop_string name, int64_t index, slop_string payload_type);
 type_extract_EnumValueEntry type_extract_enum_value_entry_new(slop_string name, int64_t index);
 type_extract_TypeRegistry* type_extract_extract_types_from_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix);
-type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix, slop_list_type_extract_ImportEntry imports);
+type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix, slop_list_type_extract_ImportEntry imports, slop_list_ctype_ModulePackage packages);
 void type_extract_extract_types_from_module(slop_arena* arena, types_SExpr* module_form, type_extract_TypeRegistry* reg_ptr, slop_string prefix);
 void type_extract_extract_type_def(slop_arena* arena, types_SExpr* type_form, type_extract_TypeRegistry* reg_ptr, slop_string prefix);
 type_extract_TstTypeEntry* type_extract_extract_record_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
@@ -200,6 +218,11 @@ SLOP_OPTION_DEFINE(type_extract_TstTypeEntry, slop_option_type_extract_TstTypeEn
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
 #define SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
 SLOP_OPTION_DEFINE(type_extract_TstTypeEntry*, slop_option_type_extract_TstTypeEntry_ptr)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEREGISTRY_DEFINED

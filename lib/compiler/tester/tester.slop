@@ -27,7 +27,7 @@
                         ImportEntry
                         extract-types-from-ast-with-imports
                         registry-add-type))
-  (import ctype (to-c-name))
+  (import ctype (to-c-name ModulePackage module-c-prefix))
 
   ;; ============================================================
   ;; Module Name Extraction
@@ -113,9 +113,9 @@
     (module-name String)
     (error-message String)))
 
-  (fn generate-tests ((arena Arena) (source String) (file-name String))
+  (fn generate-tests ((arena Arena) (source String) (file-name String) (packages (List ModulePackage)))
     (@intent "Generate test harness from SLOP source code")
-    (@spec ((Arena String String) -> TestResult))
+    (@spec ((Arena String String (List ModulePackage)) -> TestResult))
     (@alloc arena)
     ;; Step 1: Parse the source
     (match (parse arena source)
@@ -131,10 +131,10 @@
               (TestResult true (list-new arena String) 0 mod-name "")
               ;; Step 4: Extract type definitions (with imports for type lookup)
               (let ((prefix (if (> (cast Int (. mod-name len)) 0)
-                              (to-c-name arena mod-name)
+                              (module-c-prefix arena packages mod-name)
                               ""))
-                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports))
-                    (tctx (init-transpile-context arena exprs mod-name)))
+                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports packages))
+                    (tctx (init-transpile-context arena exprs mod-name packages)))
                 ;; Step 5: Generate test harness (type-aware)
                 (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports tctx file-name)))
                   (TestResult true harness-lines test-count mod-name "")))))))
@@ -153,9 +153,9 @@
   ;; ============================================================
 
   (fn generate-tests-with-imports ((arena Arena) (source String) (import-sources (List String))
-                                    (file-name String))
+                                    (file-name String) (packages (List ModulePackage)))
     (@intent "Generate test harness with types from import files")
-    (@spec ((Arena String (List String) String) -> TestResult))
+    (@spec ((Arena String (List String) String (List ModulePackage)) -> TestResult))
     (@alloc arena)
     ;; Step 1: Parse the main source
     (match (parse arena source)
@@ -171,10 +171,10 @@
               (TestResult true (list-new arena String) 0 mod-name "")
               ;; Step 4: Extract type definitions from main source
               (let ((prefix (if (> (cast Int (. mod-name len)) 0)
-                              (to-c-name arena mod-name)
+                              (module-c-prefix arena packages mod-name)
                               ""))
-                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports))
-                    (tctx (init-transpile-context arena exprs mod-name)))
+                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports packages))
+                    (tctx (init-transpile-context arena exprs mod-name packages)))
                 ;; Step 5: Extract types from each import source
                 (let ((import-count (list-len import-sources))
                       (mut i 0))
@@ -186,7 +186,7 @@
                             ;; Extract module name from import file for prefix
                             (let ((import-mod-name (extract-module-name import-exprs))
                                   (import-prefix (if (> (cast Int (. import-mod-name len)) 0)
-                                                    (to-c-name arena import-mod-name)
+                                                    (module-c-prefix arena packages import-mod-name)
                                                     "")))
                               ;; Extract and add types from this import (TypeRegistry)
                               (extract-types-from-module-ast arena import-exprs types import-prefix)

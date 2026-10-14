@@ -235,6 +235,7 @@ in the first position of a three-element parameter form.
 
 The `:c-name` attribute allows specifying a clean C name for external code to call.
 The transpiler emits both the clean name and a #define alias for the SLOP-prefixed name.
+Without it a function's C name is qualified by its module and package (see 6.3).
 
 ### 3.5 Annotations
 
@@ -953,6 +954,87 @@ SLOP                    C
 ; In debug mode: assertion
 ; In release mode: removed or __assume()
 ```
+
+### 6.3 C Names and Packages
+
+Every definition of a module gets a C name that is unique within a program
+built from more than one library:
+
+```
+Package   Module   SLOP name     C name
+-------   ------   ---------     ------
+(none)    engine   run           engine_run
+(none)    engine   Rule          engine_Rule
+pkg-a     engine   run           pkg_a_engine_run
+pkg-a     engine   Rule          pkg_a_engine_Rule
+std       strlib   trim          std_strlib_trim
+mylib     mylib    Config        mylib_Config
+```
+
+Hyphens become underscores. A module named like its package, the usual
+shape of a one-module library, uses the name once. Functions, types, constants, enum and union
+variants, and the derived names built from a type (`slop_option_pkg_a_engine_Rule`,
+`pkg_a_engine_Rule_new`) all follow the same rule. A function with `:c-name`
+is defined under that name alone, with a `#define` alias from the qualified
+name for SLOP callers.
+
+The package of a module is the `[project] name` of the nearest `slop.toml`
+at or above the module's file; a `slop.toml` without a `[project] name` is
+passed over. A module under no such file has no package and keeps the plain
+`<module>_<name>` form. The standard library is the package `std`. The
+toolchain finds each module's package when it resolves imports and passes it
+to the native tools as `--package MODULE=NAME`; code that drives
+`slop-compiler transpile` or `slop-tester` directly passes the same flags.
+
+Two libraries can therefore each have a module named `engine` with a
+function named `run`: `pkg_a_engine_run` and `pkg_b_engine_run` link into
+one program. For the same reason, a library that another library depends on
+must be built, and vendored, under one package name: a call compiled into
+the dependent resolves to the dependency's qualified names.
+
+A package name is limited to letters, digits, `_` and `-`, starting with a
+letter or `_`. A package may be named `slop-foo`: its names start with
+`slop_foo_`, and the transpiler tells them from the runtime's own `slop_`
+names by the packages it was given. The one name refused is the bare `slop`,
+whose module `list` would sit at `slop_list_`, the prefix of the generated
+containers.
+
+#### Runtime ABI
+
+`slop_runtime.h` is mostly `static inline`, so the layout of every runtime
+type and the behaviour of the arena, intern pool, map and thread code are
+compiled into each translation unit that includes it. Generated C compiled
+against the header of a different SLOP release would link and misbehave.
+
+The header defines `SLOP_RUNTIME_ABI`, an integer that changes whenever
+generated code could observe a difference: a runtime struct's layout, the
+signature or semantics of a runtime function or macro that generated code
+calls, or what the `SLOP_*_DEFINE` macros expand to. ABIs are named by year
+and a counter within it, `2026-1`, `2026-2`, and the macro carries that as
+`YYYYNN`: `202601`, `202602`. Every generated module records the ABI it was
+generated for and refuses, with `#error`, to compile against a header of
+another ABI, or one with no `SLOP_RUNTIME_ABI` at all:
+
+```c
+#include "slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates ..."
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide ..."
+#endif
+```
+
+A build that vendors the runtime header can therefore mix generated C from
+any releases that share an ABI number, and need not pin them to one release.
+The toolchain's own build observes the check too: after a bump,
+`make build-native` compiles the previous compiler's output against the
+previous runtime header (the bootstrap snapshot's) before rebuilding against
+the current one.
+
+The intern pool (`slop_global_intern_pool`) and the allocation counter
+(`slop_global_allocated`) are one object per program, shared by every
+translation unit, so strings interned by one library's code are the strings
+another library's code sees.
 
 ## 7. Verification Levels
 

@@ -2,6 +2,11 @@
 #define SLOP_test_emit_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -46,6 +51,12 @@ SLOP_OPTION_DEFINE(extract_TestCase*, slop_option_extract_TestCase_ptr)
 SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 #endif
 
+#ifndef SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_IMPL_DEFINED
+SLOP_LIST_DEFINE(ctype_ModulePackage, slop_list_ctype_ModulePackage)
+#endif
+
 #ifndef SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_IMPL_DEFINED
@@ -55,6 +66,11 @@ SLOP_LIST_DEFINE(type_extract_TstFieldEntry, slop_list_type_extract_TstFieldEntr
 #ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 #define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
@@ -124,7 +140,7 @@ slop_option_string test_emit_first_error_since(slop_arena* arena, context_Transp
 types_SExpr* test_emit_example_anchor(extract_TestCase tc);
 void test_emit_emit_test_function_typed(test_emit_EmitContext* ctx, extract_TestCase tc, int64_t index, slop_string prefix, type_extract_TypeRegistry* types, context_TranspileContext* tctx, slop_string file_name);
 void test_emit_emit_main_function(test_emit_EmitContext* ctx, int64_t test_count, uint8_t needs_arena);
-slop_string test_emit_make_c_fn_name(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_string prefix);
+slop_string test_emit_make_c_fn_name(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_string prefix, slop_list_ctype_ModulePackage packages);
 slop_string test_emit_build_args_display_typed(slop_arena* arena, slop_list_types_SExpr_ptr args, type_extract_TypeRegistry types);
 test_emit_CompareInfo test_emit_build_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_option_string return_type, slop_string prefix, type_extract_TypeRegistry types, slop_option_string eq_fn, context_TranspileContext* tctx);
 test_emit_CompareInfo test_emit_build_eq_fn_comparison(slop_arena* arena, types_SExpr* expected, slop_option_string eq_fn, slop_string prefix, type_extract_TypeRegistry types, context_TranspileContext* tctx);
@@ -165,7 +181,7 @@ uint8_t test_emit_is_error_value(types_SExpr* expr);
 slop_string test_emit_extract_list_element_type(slop_arena* arena, slop_string list_type_str);
 slop_string test_emit_build_eq_function_name(slop_arena* arena, slop_string type_name, slop_string prefix, type_extract_TypeRegistry types);
 test_emit_CompareInfo test_emit_build_list_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types, slop_string ret_type_str, slop_option_string eq_fn, context_TranspileContext* tctx);
-context_TranspileContext* test_emit_init_transpile_context(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_name);
+context_TranspileContext* test_emit_init_transpile_context(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_name, slop_list_ctype_ModulePackage packages);
 void test_emit_init_transpile_context_for_imports(slop_arena* arena, context_TranspileContext* tctx, slop_list_types_SExpr_ptr import_ast, slop_string import_mod_name);
 void test_emit_re_prescan_main_module(slop_arena* arena, context_TranspileContext* tctx, slop_list_types_SExpr_ptr ast);
 void test_emit_register_all_field_types(context_TranspileContext* tctx, slop_list_types_SExpr_ptr body_forms);
@@ -194,6 +210,11 @@ SLOP_OPTION_DEFINE(extract_TestCase*, slop_option_extract_TestCase_ptr)
 #ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 #define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED

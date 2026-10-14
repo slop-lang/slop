@@ -2,6 +2,11 @@
 #define SLOP_tester_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -31,9 +36,20 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 #endif
 
+#ifndef SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_LIST_CTYPE_MODULEPACKAGE_IMPL_DEFINED
+SLOP_LIST_DEFINE(ctype_ModulePackage, slop_list_ctype_ModulePackage)
+#endif
+
 #ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 #define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 struct tester_TestResult {
@@ -52,8 +68,8 @@ SLOP_OPTION_DEFINE(tester_TestResult, slop_option_tester_TestResult)
 
 slop_string tester_extract_module_name(slop_list_types_SExpr_ptr exprs);
 slop_list_type_extract_ImportEntry tester_extract_imports(slop_arena* arena, slop_list_types_SExpr_ptr exprs);
-tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source, slop_string file_name);
-tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_string source, slop_list_string import_sources, slop_string file_name);
+tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source, slop_string file_name, slop_list_ctype_ModulePackage packages);
+tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_string source, slop_list_string import_sources, slop_string file_name, slop_list_ctype_ModulePackage packages);
 void tester_extract_types_from_module_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, type_extract_TypeRegistry* types, slop_string prefix);
 void tester_extract_types_from_module_form(slop_arena* arena, types_SExpr* module_form, type_extract_TypeRegistry* types, slop_string prefix);
 void tester_extract_single_type_def(slop_arena* arena, types_SExpr* type_form, type_extract_TypeRegistry* types, slop_string prefix);
@@ -78,6 +94,11 @@ SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntr
 #ifndef SLOP_OPTION_TESTER_TESTRESULT_DEFINED
 #define SLOP_OPTION_TESTER_TESTRESULT_DEFINED
 SLOP_OPTION_DEFINE(tester_TestResult, slop_option_tester_TestResult)
+#endif
+
+#ifndef SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+#define SLOP_OPTION_CTYPE_MODULEPACKAGE_DEFINED
+SLOP_OPTION_DEFINE(ctype_ModulePackage, slop_option_ctype_ModulePackage)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED

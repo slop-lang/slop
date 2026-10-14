@@ -2,6 +2,11 @@
 #define SLOP_expr_H
 
 #include "../runtime/slop_runtime.h"
+#ifndef SLOP_RUNTIME_ABI
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), but slop_runtime.h predates runtime ABI versioning: use the slop_runtime.h of the SLOP release that generated this code"
+#elif SLOP_RUNTIME_ABI != 202601
+#error "this module was generated for SLOP runtime ABI 2026-1 (SLOP_RUNTIME_ABI 202601), which this slop_runtime.h does not provide (SLOP_RUNTIME_ABI differs): regenerate the C with the SLOP release that matches the runtime, or use the slop_runtime.h of the release that generated it"
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
@@ -83,7 +88,7 @@ uint8_t expr_type_token_is_number(slop_string s);
 int64_t expr_type_token_to_int(slop_string s);
 slop_string expr_get_base_function_name(slop_arena* arena, slop_string fn_name);
 slop_string expr_get_module_from_qualified_name(slop_arena* arena, slop_string fn_name);
-slop_string expr_get_runtime_function_name(slop_string fn_name);
+slop_string expr_get_runtime_function_name(context_TranspileContext* ctx, slop_string fn_name);
 slop_string expr_transpile_enum_variant(context_TranspileContext* ctx, slop_string variant_name);
 slop_string expr_transpile_ok(context_TranspileContext* ctx, slop_string value_c);
 slop_string expr_transpile_error(context_TranspileContext* ctx, slop_string value_c);

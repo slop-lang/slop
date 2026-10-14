@@ -1,0 +1,6 @@
+# The standard library is the package "std" (#360). The generated C names of
+# its modules are qualified by it: strlib's trim is std_strlib_trim, so a
+# program's own strlib module, or another library's, cannot collide with it.
+# See spec/LANGUAGE.md, section 6.3.
+[project]
+name = "std"

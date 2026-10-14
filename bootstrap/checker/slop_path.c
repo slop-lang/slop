@@ -1,24 +1,24 @@
 #include "../runtime/slop_runtime.h"
 #include "slop_path.h"
 
-slop_string path_path_dirname(slop_arena* arena, slop_string path);
-slop_string path_path_join(slop_arena* arena, slop_string base, slop_string rel);
-slop_string path_path_basename(slop_arena* arena, slop_string path);
-slop_string path_path_extension(slop_arena* arena, slop_string path);
+slop_string std_path_path_dirname(slop_arena* arena, slop_string path);
+slop_string std_path_path_join(slop_arena* arena, slop_string base, slop_string rel);
+slop_string std_path_path_basename(slop_arena* arena, slop_string path);
+slop_string std_path_path_extension(slop_arena* arena, slop_string path);
 
-slop_string path_path_dirname(slop_arena* arena, slop_string path) {
+slop_string std_path_path_dirname(slop_arena* arena, slop_string path) {
     {
         __auto_type len = ((int64_t)(path.len));
         if (len == 0) {
             return SLOP_STR(".");
         } else {
-            __auto_type _mv_36 = strlib_last_index_of(path, SLOP_STR("/"));
+            __auto_type _mv_36 = std_strlib_last_index_of(path, SLOP_STR("/"));
             if (_mv_36.has_value) {
                 __auto_type idx = _mv_36.value;
                 if (idx == 0) {
                     return SLOP_STR("/");
                 } else {
-                    return strlib_substring(arena, path, 0, ((int64_t)(idx)));
+                    return std_strlib_substring(arena, path, 0, ((int64_t)(idx)));
                 }
             } else if (!_mv_36.has_value) {
                 return SLOP_STR(".");
@@ -28,7 +28,7 @@ slop_string path_path_dirname(slop_arena* arena, slop_string path) {
     }
 }
 
-slop_string path_path_join(slop_arena* arena, slop_string base, slop_string rel) {
+slop_string std_path_path_join(slop_arena* arena, slop_string base, slop_string rel) {
     {
         __auto_type base_len = ((int64_t)(base.len));
         __auto_type rel_len = ((int64_t)(rel.len));
@@ -45,13 +45,13 @@ slop_string path_path_join(slop_arena* arena, slop_string base, slop_string rel)
     }
 }
 
-slop_string path_path_basename(slop_arena* arena, slop_string path) {
+slop_string std_path_path_basename(slop_arena* arena, slop_string path) {
     {
         __auto_type len = ((int64_t)(path.len));
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_37 = strlib_last_index_of(path, SLOP_STR("/"));
+            __auto_type _mv_37 = std_strlib_last_index_of(path, SLOP_STR("/"));
             if (_mv_37.has_value) {
                 __auto_type idx = _mv_37.value;
                 {
@@ -60,7 +60,7 @@ slop_string path_path_basename(slop_arena* arena, slop_string path) {
                     if (remaining <= 0) {
                         return SLOP_STR("");
                     } else {
-                        return strlib_substring(arena, path, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:56"))), ((int64_t)(SLOP_RANGE(int64_t, remaining, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:80"))));
+                        return std_strlib_substring(arena, path, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:56"))), ((int64_t)(SLOP_RANGE(int64_t, remaining, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:80"))));
                     }
                 }
             } else if (!_mv_37.has_value) {
@@ -71,13 +71,13 @@ slop_string path_path_basename(slop_arena* arena, slop_string path) {
     }
 }
 
-slop_string path_path_extension(slop_arena* arena, slop_string path) {
+slop_string std_path_path_extension(slop_arena* arena, slop_string path) {
     {
         __auto_type len = ((int64_t)(path.len));
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_38 = strlib_last_index_of(path, SLOP_STR("."));
+            __auto_type _mv_38 = std_strlib_last_index_of(path, SLOP_STR("."));
             if (_mv_38.has_value) {
                 __auto_type idx = _mv_38.value;
                 {
@@ -85,7 +85,7 @@ slop_string path_path_extension(slop_arena* arena, slop_string path) {
                     if (ext_len <= 0) {
                         return SLOP_STR("");
                     } else {
-                        return strlib_substring(arena, path, ((int64_t)(idx)), ((int64_t)(SLOP_RANGE(int64_t, ext_len, 1, 0, 0, 0, "(Int 0 ..) at path.slop:96:78"))));
+                        return std_strlib_substring(arena, path, ((int64_t)(idx)), ((int64_t)(SLOP_RANGE(int64_t, ext_len, 1, 0, 0, 0, "(Int 0 ..) at path.slop:96:78"))));
                     }
                 }
             } else if (!_mv_38.has_value) {

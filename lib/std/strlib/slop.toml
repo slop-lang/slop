@@ -1,5 +1,6 @@
+# No [project] name: this module is part of the package "std" named in
+# ../slop.toml, which qualifies its C names (#360).
 [project]
-name = "strlib"
 entry = "strlib.slop"
 
 [build]

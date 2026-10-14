@@ -23,7 +23,7 @@ project_root = script_dir.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from slop.parser import parse_file
-from slop.resolver import ModuleResolver
+from slop.resolver import ModuleResolver, package_flags
 from slop.providers import load_project_config
 from slop import paths
 
@@ -81,8 +81,10 @@ def main():
             print(f"Error: Native compiler not found at {compiler_bin}")
             sys.exit(1)
 
-        # Call native compiler
-        cmd = [str(compiler_bin), "transpile"] + source_files
+        # Call native compiler, telling it each module's package (#360): the
+        # std modules are std, each tool's own modules are its package
+        cmd = [str(compiler_bin), "transpile"] + package_flags(
+            {name: info.path for name, info in graph.modules.items()}) + source_files
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:

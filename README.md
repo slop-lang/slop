@@ -426,7 +426,7 @@ Create a `slop.toml` file to configure your project:
 
 ```toml
 [project]
-name = "my-project"
+name = "my-project"            # Also qualifies the C names: my_project_<module>_<name>
 version = "0.1.0"
 entry = "src/main.slop"        # Main module
 
@@ -724,6 +724,16 @@ slop build mylib.slop --library shared -o libmylib
 This generates:
 - `libmylib.a` or `libmylib.so` - The compiled library
 - `slop_mylib.h` - Module header with type definitions and `#define` aliases for `:c-name` functions
+
+Functions without a `:c-name`, and every type, are named `<module>_<name>`
+in C, or `<package>_<module>_<name>` when the module's nearest `slop.toml`
+has a `[project] name` (`mylib_Config` above: a module named like its package
+uses the name once). That qualifier is what lets two libraries that each
+have an `engine` module link into one program (the standard library is the
+package `std`: `std_strlib_trim`). The generated headers also check that
+`slop_runtime.h` is the runtime ABI the code was generated for, and fail to
+compile against another release's header instead of misbehaving at run time.
+See `spec/LANGUAGE.md`, section 6.3.
 
 Use the module header in your C code:
 

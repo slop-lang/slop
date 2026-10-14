@@ -10,7 +10,8 @@ void tester_main_print_string(slop_string s);
 void tester_main_print_json_string(slop_string s);
 slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string lines);
 void tester_main_print_int(int64_t n);
-slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, uint8_t** argv);
+slop_list_string tester_main_read_import_files(slop_arena* arena, uint8_t** argv, slop_list_int files);
+uint8_t tester_main_collect_args(slop_arena* arena, int64_t argc, uint8_t** argv, slop_list_ctype_ModulePackage* packages, slop_list_int* files);
 int tester_main_main(int argc, char** _c_argv);
 
 slop_option_string tester_main_read_file(slop_arena* arena, char* filename) {
@@ -101,11 +102,11 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                 int64_t total = 0;
                 int64_t i = 0;
                 while (i < len) {
-                    __auto_type _mv_1781 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_1781.has_value) {
-                        __auto_type line = _mv_1781.value;
+                    __auto_type _mv_1785 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_1785.has_value) {
+                        __auto_type line = _mv_1785.value;
                         total = (total + (((int64_t)(line.len)) + 1));
-                    } else if (!_mv_1781.has_value) {
+                    } else if (!_mv_1785.has_value) {
                     }
                     i = (i + 1);
                 }
@@ -114,9 +115,9 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                     int64_t pos = 0;
                     int64_t j = 0;
                     while (j < len) {
-                        __auto_type _mv_1782 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                        if (_mv_1782.has_value) {
-                            __auto_type line = _mv_1782.value;
+                        __auto_type _mv_1786 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        if (_mv_1786.has_value) {
+                            __auto_type line = _mv_1786.value;
                             {
                                 __auto_type line_len = ((int64_t)(line.len));
                                 __auto_type line_data = line.data;
@@ -129,7 +130,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                                 buf[pos] = 10;
                                 pos = (pos + 1);
                             }
-                        } else if (!_mv_1782.has_value) {
+                        } else if (!_mv_1786.has_value) {
                         }
                         j = (j + 1);
                     }
@@ -155,19 +156,25 @@ void tester_main_print_int(int64_t n) {
     }
 }
 
-slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, uint8_t** argv) {
+slop_list_string tester_main_read_import_files(slop_arena* arena, uint8_t** argv, slop_list_int files) {
     {
         __auto_type sources = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
-        int64_t i = 2;
-        while (i < argc) {
-            {
-                __auto_type path_ptr = ((char*)(argv[i]));
-                __auto_type _mv_1783 = tester_main_read_file(arena, path_ptr);
-                if (_mv_1783.has_value) {
-                    __auto_type source = _mv_1783.value;
-                    ({ __auto_type _lst_p = &(sources); __auto_type _item = (source); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                } else if (!_mv_1783.has_value) {
+        __auto_type count = ((int64_t)((files).len));
+        int64_t i = 1;
+        while (i < count) {
+            __auto_type _mv_1787 = ({ __auto_type _lst = files; size_t _idx = (size_t)i; slop_option_int _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_1787.has_value) {
+                __auto_type idx = _mv_1787.value;
+                {
+                    __auto_type path_ptr = ((char*)(argv[idx]));
+                    __auto_type _mv_1788 = tester_main_read_file(arena, path_ptr);
+                    if (_mv_1788.has_value) {
+                        __auto_type source = _mv_1788.value;
+                        ({ __auto_type _lst_p = &(sources); __auto_type _item = (source); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                    } else if (!_mv_1788.has_value) {
+                    }
                 }
+            } else if (!_mv_1787.has_value) {
             }
             i = (i + 1);
         }
@@ -175,16 +182,48 @@ slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, 
     }
 }
 
+uint8_t tester_main_collect_args(slop_arena* arena, int64_t argc, uint8_t** argv, slop_list_ctype_ModulePackage* packages, slop_list_int* files) {
+    {
+        int64_t i = 1;
+        uint8_t ok = 1;
+        while (i < argc) {
+            {
+                __auto_type arg = std_strlib_cstring_to_string(argv[i]);
+                if (string_eq(arg, SLOP_STR("--package"))) {
+                    if ((i + 1) < argc) {
+                        __auto_type _mv_1789 = ctype_parse_module_package(arena, std_strlib_cstring_to_string(argv[(i + 1)]));
+                        if (_mv_1789.has_value) {
+                            __auto_type entry = _mv_1789.value;
+                            ({ __auto_type _lst_p = &((*packages)); __auto_type _item = (entry); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                        } else if (!_mv_1789.has_value) {
+                            tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"--package expects MODULE=NAME\"}\n").data)));
+                            ok = 0;
+                        }
+                    } else {
+                        tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"--package expects MODULE=NAME\"}\n").data)));
+                        ok = 0;
+                    }
+                    i = (i + 2);
+                } else {
+                    ({ __auto_type _lst_p = &((*files)); __auto_type _item = (i); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                    i = (i + 1);
+                }
+            }
+        }
+        return ok;
+    }
+}
+
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
     if (argc >= 2) {
-        if (string_eq(strlib_cstring_to_string(argv[1]), SLOP_STR("--version"))) {
+        if (string_eq(std_strlib_cstring_to_string(argv[1]), SLOP_STR("--version"))) {
             tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.4.3\n").data)));
             return 0;
         }
     }
     if (argc < 2) {
-        tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester <input.slop> [import-files...]\n").data)));
+        tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester [--package MODULE=NAME ...] <input.slop> [import-files...]\n").data)));
         return 1;
     } else {
         {
@@ -196,52 +235,76 @@ int main(int argc, char** _c_argv) {
             SLOP_PRE(_arena_3.base != NULL, "arena allocation failed");
             #endif
             slop_arena* arena = &_arena_3;
-            __auto_type _mv_1784 = tester_main_read_file(arena, ((char*)(argv[1])));
-            if (_mv_1784.has_value) {
-                __auto_type source = _mv_1784.value;
-                {
-                    __auto_type import_sources = tester_main_read_import_files(arena, argc, argv);
-                    __auto_type result = tester_generate_tests_with_imports(arena, source, import_sources, strlib_cstring_to_string(argv[1]));
-                    if (result.success) {
-                        putchar(123);
-                        tester_main_print_str(((char*)(SLOP_STR("\"test_harness\":").data)));
-                        {
-                            __auto_type harness_str = tester_main_lines_to_string(arena, result.test_harness);
-                            tester_main_print_json_string(harness_str);
-                        }
-                        putchar(44);
-                        tester_main_print_str(((char*)(SLOP_STR("\"test_count\":").data)));
-                        tester_main_print_int(result.test_count);
-                        putchar(44);
-                        tester_main_print_str(((char*)(SLOP_STR("\"module_name\":").data)));
-                        tester_main_print_json_string(result.module_name);
-                        putchar(125);
-                        putchar(10);
-                        {
-                            int _wa_ret = 0;
-                            slop_arena_free(&_arena_3);
-                            return _wa_ret;
-                        }
-                    } else {
-                        tester_main_print_str(((char*)(SLOP_STR("{\"error\":").data)));
-                        tester_main_print_json_string(result.error_message);
-                        tester_main_print_str(((char*)(SLOP_STR("}\n").data)));
+            {
+                __auto_type packages = ((slop_list_ctype_ModulePackage){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
+                __auto_type files = ((slop_list_int){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
+                if (!(tester_main_collect_args(arena, argc, argv, (&packages), (&files)))) {
+                    {
+                        int _wa_ret = 1;
+                        slop_arena_free(&_arena_3);
+                        return _wa_ret;
+                    }
+                } else {
+                    __auto_type _mv_1790 = ({ __auto_type _lst = files; size_t _idx = (size_t)0; slop_option_int _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (!_mv_1790.has_value) {
+                        tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester [--package MODULE=NAME ...] <input.slop> [import-files...]\n").data)));
                         {
                             int _wa_ret = 1;
                             slop_arena_free(&_arena_3);
                             return _wa_ret;
                         }
+                    } else if (_mv_1790.has_value) {
+                        __auto_type input_idx = _mv_1790.value;
+                        __auto_type _mv_1791 = tester_main_read_file(arena, ((char*)(argv[input_idx])));
+                        if (_mv_1791.has_value) {
+                            __auto_type source = _mv_1791.value;
+                            {
+                                __auto_type import_sources = tester_main_read_import_files(arena, argv, files);
+                                __auto_type result = tester_generate_tests_with_imports(arena, source, import_sources, std_strlib_cstring_to_string(argv[input_idx]), packages);
+                                if (result.success) {
+                                    putchar(123);
+                                    tester_main_print_str(((char*)(SLOP_STR("\"test_harness\":").data)));
+                                    {
+                                        __auto_type harness_str = tester_main_lines_to_string(arena, result.test_harness);
+                                        tester_main_print_json_string(harness_str);
+                                    }
+                                    putchar(44);
+                                    tester_main_print_str(((char*)(SLOP_STR("\"test_count\":").data)));
+                                    tester_main_print_int(result.test_count);
+                                    putchar(44);
+                                    tester_main_print_str(((char*)(SLOP_STR("\"module_name\":").data)));
+                                    tester_main_print_json_string(result.module_name);
+                                    putchar(125);
+                                    putchar(10);
+                                    {
+                                        int _wa_ret = 0;
+                                        slop_arena_free(&_arena_3);
+                                        return _wa_ret;
+                                    }
+                                } else {
+                                    tester_main_print_str(((char*)(SLOP_STR("{\"error\":").data)));
+                                    tester_main_print_json_string(result.error_message);
+                                    tester_main_print_str(((char*)(SLOP_STR("}\n").data)));
+                                    {
+                                        int _wa_ret = 1;
+                                        slop_arena_free(&_arena_3);
+                                        return _wa_ret;
+                                    }
+                                }
+                            }
+                        } else if (!_mv_1791.has_value) {
+                            tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
+                            {
+                                int _wa_ret = 1;
+                                slop_arena_free(&_arena_3);
+                                return _wa_ret;
+                            }
+                        }
+                        SLOP_UNREACHABLE();
                     }
-                }
-            } else if (!_mv_1784.has_value) {
-                tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
-                {
-                    int _wa_ret = 1;
-                    slop_arena_free(&_arena_3);
-                    return _wa_ret;
+                    SLOP_UNREACHABLE();
                 }
             }
-            SLOP_UNREACHABLE();
             slop_arena_free(arena);
         }
     }
