@@ -625,6 +625,27 @@ run_negative_check_test() {
     fi
 }
 
+# A check that must pass with no errors and no warnings at all.
+run_check_quiet_test() {
+    local test_file="$1"
+    local test_name="$2"
+    shift 2
+
+    echo -n "Testing $test_name (check, no warnings)... "
+    local output
+    output=$(uv run slop check "$test_file" "$@" 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -eq 0 ] && ! echo "$output" | grep -q ': error:\|: warning:'; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (expected no errors and no warnings)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # A check that must pass with no errors and report the expected warning.
 run_check_warning_test() {
     local test_file="$1"
@@ -653,6 +674,12 @@ run_check_warning_test() {
         FAIL_COUNT=$((FAIL_COUNT + 1))
     fi
 }
+
+# << and the bitwise operators type as Int, and a (list T ...) literal is a
+# (List T) for for-each (#362): the check is silent and the program runs
+IC="$REPO_ROOT/tests/infer-clean"
+run_check_quiet_test "$IC/shift_list.slop" "infer-shift-list-literal"
+run_lib_test "$IC/shift_list.slop" "infer-shift-list-literal-run"
 
 # alpha and beta each define Pt, Color and Shape. Before, the checker took
 # whichever module registered a name first: beta's own Pt could be "Unknown

@@ -116,6 +116,8 @@ void infer_check_list_operands(type_env_TypeEnv* env, slop_string op, slop_list_
 int64_t infer_float_rank(slop_string name);
 types_ResolvedType* infer_arith_base_type(types_ResolvedType* t);
 infer_ArithClass infer_arith_operand_class(types_ResolvedType* t);
+uint8_t infer_is_bitwise_op(slop_string op);
+types_ResolvedType* infer_list_elem_type_arg(type_env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t idx);
 types_ResolvedType* infer_infer_arith_expr(type_env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t line, int64_t col);
 types_ResolvedType* infer_infer_expr_quietly(type_env_TypeEnv* env, types_SExpr* expr);
 types_ResolvedType* infer_resolve_type_expr_quietly(type_env_TypeEnv* env, types_SExpr* type_expr);

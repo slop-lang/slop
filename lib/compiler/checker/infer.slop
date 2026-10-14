@@ -1195,6 +1195,10 @@
              (string-eq op "*") (string-eq op "/") (string-eq op "%"))
           (infer-arith-expr env op items line col))
 
+        ;; Bitwise and shift operators: integer operands, Int result (#362)
+        ((is-bitwise-op op)
+          (infer-arith-expr env op items line col))
+
         ;; (min a b) / (max a b) - transpiler intrinsics (a ternary, emitted
         ;; ahead of any function lookup), so typed as their first operand
         ((or (string-eq op "min") (string-eq op "max"))
@@ -1547,21 +1551,12 @@
                     ;; list-new expects 2 args: arena, Type - returns List
                     ((string-eq op "list-new")
                       (do (check-builtin-args env "list-new" 2 (- len 1) line col)
+                          ;; (list-new arena ElemType): the element type is the third item
                           (let ((arena (env-arena env))
-                                (list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
-                            ;; Extract element type from third argument (index 2): (list-new arena ElemType)
-                            (when (>= len 3)
-                              (match (list-get items 2)
-                                ((some type-expr)
-                                  (let ((elem-type (if (sexpr-is-list type-expr)
-                                                     (resolve-complex-type-expr env type-expr)
-                                                     (let ((tname (sexpr-get-symbol-name type-expr)))
-                                                       (if (string-eq tname "")
-                                                         nil
-                                                         (resolve-simple-type env tname))))))
-                                    (when (!= elem-type nil)
-                                      (resolved-type-set-inner list-type elem-type))))
-                                ((none) (do))))
+                                (list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*"))
+                                (elem-type (list-elem-type-arg env items 2)))
+                            (when (!= elem-type nil)
+                              (resolved-type-set-inner list-type elem-type))
                             list-type)))
                     ;; SExpr helpers
                     ((string-eq op "sexpr-is-list") (env-get-bool-type env))
@@ -1720,10 +1715,16 @@
                           (env-get-unit-type env)))
                     ;; Set builtins
                     ;; list literal: (list Type e1 e2... [:arena a]) - its
-                    ;; elements are inferred, but not the option (#277)
+                    ;; elements are inferred, but not the option (#277); it is
+                    ;; a (List Type), the type being the first item (#362)
                     ((string-eq op "list")
                       (do (infer-builtin-args-before env expr (literal-arena-option-at env op items line col))
-                          (env-get-unknown-type env)))
+                          (let ((arena (env-arena env))
+                                (list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*"))
+                                (elem-type (list-elem-type-arg env items 1)))
+                            (when (!= elem-type nil)
+                              (resolved-type-set-inner list-type elem-type))
+                            list-type)))
                     ;; set literal: (set Type e1 e2... [:arena a]) - returns Set
                     ((string-eq op "set")
                       (let ((arena (env-arena env)))
@@ -2134,6 +2135,30 @@
           'arith-permissive)
         (else 'arith-other))))
 
+  (fn is-bitwise-op ((op String))
+    (@intent "Whether op is a bitwise or shift operator, which takes integers only")
+    (@spec ((String) -> Bool))
+    (@example ("<<") -> true)
+    (@example ("bit-xor") -> true)
+    (@example ("+") -> false)
+    (or (string-eq op "<<") (string-eq op ">>")
+        (string-eq op "&") (string-eq op "|") (string-eq op "^")
+        (string-eq op "bit-and") (string-eq op "bit-or") (string-eq op "bit-xor")))
+
+  (fn list-elem-type-arg ((env (Ptr TypeEnv)) (items (List (Ptr SExpr))) (idx Int))
+    (@intent "The element type named at items[idx] of a list form, (list T ...) or (list-new arena T); nil when absent or unknown")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr)) Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (match (list-get items idx)
+      ((some type-expr)
+        (if (sexpr-is-list type-expr)
+          (resolve-complex-type-expr env type-expr)
+          (let ((tname (sexpr-get-symbol-name type-expr)))
+            (if (string-eq tname "")
+              nil
+              (resolve-simple-type env tname)))))
+      ((none) nil)))
+
   (fn infer-arith-expr ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
                         (line Int) (col Int))
     (@intent "Check an arithmetic form's operands and infer its result type")
@@ -2141,8 +2166,9 @@
     (@pre (!= env nil))
     ;; Integers of any width mix, as in C, and give Int. A floating operand
     ;; makes the result floating -- F64 if one is F64, else F32 if one is F32,
-    ;; else Float -- so (* x 2.0) with x an F32 stays an F32. % is integer-only
-    ;; because C's is. There is no pointer arithmetic: cast the pointer to Int.
+    ;; else Float -- so (* x 2.0) with x an F32 stays an F32. % and the
+    ;; bitwise and shift operators are integer-only because C's are. There is
+    ;; no pointer arithmetic: cast the pointer to Int.
     ;; Each bad operand is reported at its own position, and the result type is
     ;; still returned, so one bad operand does not cascade.
     ;;
@@ -2150,7 +2176,7 @@
     ;; operand's bounds, or unbounded, combined left to right. / and % carry
     ;; none.
     (let ((arena (env-arena env))
-          (is-mod (string-eq op "%"))
+          (int-only (or (string-eq op "%") (is-bitwise-op op)))
           (len (list-len items))
           (mut result (env-get-int-type env))
           (mut acc (range-bounds-unbounded))
@@ -2176,7 +2202,7 @@
                 (else (set! acc (range-bounds-unbounded))))
               (set! seen-operand true)
               (cond
-                ((and (== cls 'arith-floating) is-mod)
+                ((and (== cls 'arith-floating) int-only)
                   (report-operand-mismatch env op "needs an integer operand"
                                            "Int" shown op-line op-col))
                 ((== cls 'arith-floating)
@@ -2191,8 +2217,8 @@
                     op-line op-col))
                 ((== cls 'arith-other)
                   (report-operand-mismatch env op
-                                           (if is-mod "needs an integer operand" "needs a numeric operand")
-                                           (if is-mod "Int" "Int or Float")
+                                           (if int-only "needs an integer operand" "needs a numeric operand")
+                                           (if int-only "Int" "Int or Float")
                                            shown op-line op-col))
                 (else (do)))))
           ((none) (do))))
