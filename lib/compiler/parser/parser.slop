@@ -22,7 +22,7 @@
     ;; Parser
     parse
     ;; Utilities
-    is-form find-holes pretty-print json-print
+    is-form find-holes pretty-print json-write
     sexpr-line sexpr-col
     sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name
     ;; Type predicates
@@ -37,7 +37,7 @@
   (import strlib (is-alpha is-digit is-alnum is-space
                   char-at Byte
                   char-is-symbol-start char-is-symbol-char char-is-operator
-                  float-to-string))
+                  float-to-string join))
 
   ;; ============================================================
   ;; FFI Declarations
@@ -1301,18 +1301,20 @@
               (len (list-len items)))
           (if (== len 0)
             (string-copy arena "()")
-            (let ((mut result (string-copy arena "("))
+            ;; Render the children first and join them once: appending each
+            ;; to the text so far copied the whole list per child, so a
+            ;; module of n forms cost n copies of itself (#375)
+            (let ((mut parts (list String))
                   (mut i 0))
               (while (< i len)
                 (match (list-get items i)
                   ((some child)
-                    (let ((child-str (pretty-print arena child)))
-                      (when (> i 0)
-                        (set! result (string-concat arena result " ")))
-                      (set! result (string-concat arena result child-str))))
+                    (list-push parts (pretty-print arena child)))
                   ((none) (do)))
                 (set! i (+ i 1)))
-              (string-concat arena result ")")))))))
+              (string-concat arena
+                (string-concat arena "(" (join arena parts " "))
+                ")")))))))
 
   ;; ============================================================
   ;; JSON Output Functions
@@ -1376,112 +1378,74 @@
       (set! (@ buf out) 34)  ;; closing quote
       (String buf (cast U64 (+ out 1)))))
 
-  (fn json-print-list ((arena Arena) (items (List (Ptr SExpr))))
-    (@intent "Print list of S-expressions as JSON array")
-    (@spec ((Arena (List (Ptr SExpr))) -> String))
-    (@alloc arena)
-    (let ((len (list-len items)))
-      (if (== len 0)
-        (string-copy arena "[]")
-        (let ((mut result (string-copy arena "["))
-              (mut i 0))
-          (while (< i len)
-            (match (list-get items i)
-              ((some child)
-                (let ((child-json (json-print arena child)))
-                  (when (> i 0)
-                    (set! result (string-concat arena result ",")))
-                  (set! result (string-concat arena result child-json))))
-              ((none) (do)))
-            (set! i (+ i 1)))
-          (string-concat arena result "]")))))
+  (fn json-write-tail ((line-str String) (col-str String))
+    (@intent "Write the ,\"line\":N,\"col\":N} that ends every JSON node")
+    (@spec ((String String) -> Unit))
+    (print ",\"line\":")
+    (print line-str)
+    (print ",\"col\":")
+    (print col-str)
+    (print "}"))
 
-  (fn json-print ((arena Arena) (expr (Ptr SExpr)))
-    (@intent "Print S-expression as JSON")
-    (@spec ((Arena (Ptr SExpr)) -> String))
-    (@alloc arena)
+  (fn json-write-list ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Write a list of S-expressions to stdout as a JSON array")
+    (@spec ((Arena (List (Ptr SExpr))) -> Unit))
+    (let ((len (list-len items))
+          (mut i 0))
+      (print "[")
+      (while (< i len)
+        (match (list-get items i)
+          ((some child)
+            (do
+              (when (> i 0)
+                (print ","))
+              (json-write arena child)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (print "]")))
+
+  (fn json-write ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Write an S-expression to stdout as JSON, piece by piece: nothing of it is assembled in memory (#375)")
+    (@spec ((Arena (Ptr SExpr)) -> Unit))
+    ;; Building the text with string-concat copied every list's items once
+    ;; per concatenation and once per nesting level, all of it kept by the
+    ;; arena: gigabytes for a module of a thousand small functions.
     (match (deref expr)
       ;; Symbol: {"type":"Symbol","name":"...","line":N,"col":N}
       ((sym sym)
-        (let ((escaped (json-escape-string arena (. sym name)))
-              (line-str (int-to-string arena (. sym line)))
-              (col-str (int-to-string arena (. sym col))))
-          ;; Build: {"type":"Symbol","name":<escaped>,"line":<line>,"col":<col>}
-          (string-concat arena
-            (string-concat arena
-              (string-concat arena
-                (string-concat arena
-                  (string-concat arena
-                    (string-concat arena "{\"type\":\"Symbol\",\"name\":" escaped)
-                    ",\"line\":")
-                  line-str)
-                ",\"col\":")
-              col-str)
-            "}")))
+        (do
+          (print "{\"type\":\"Symbol\",\"name\":")
+          (print (json-escape-string arena (. sym name)))
+          (json-write-tail (int-to-string arena (. sym line)) (int-to-string arena (. sym col)))))
 
       ;; String: {"type":"String","value":"...","line":N,"col":N}
       ((str str)
-        (let ((escaped (json-escape-string arena (. str value)))
-              (line-str (int-to-string arena (. str line)))
-              (col-str (int-to-string arena (. str col))))
-          (string-concat arena
-            (string-concat arena
-              (string-concat arena
-                (string-concat arena
-                  (string-concat arena
-                    (string-concat arena "{\"type\":\"String\",\"value\":" escaped)
-                    ",\"line\":")
-                  line-str)
-                ",\"col\":")
-              col-str)
-            "}")))
+        (do
+          (print "{\"type\":\"String\",\"value\":")
+          (print (json-escape-string arena (. str value)))
+          (json-write-tail (int-to-string arena (. str line)) (int-to-string arena (. str col)))))
 
       ;; Number: {"type":"Number","value":N,"is_float":bool,"raw":"...","line":N,"col":N}
       ;; A float's value is its literal text made valid JSON, so no precision
       ;; is lost (1e-20) and no huge value overruns a format buffer (1e300).
       ;; raw is the token as written.
       ((num num)
-        (let ((line-str (int-to-string arena (. num line)))
-              (col-str (int-to-string arena (. num col)))
-              (val-str (if (. num is-float)
+        (let ((val-str (if (. num is-float)
                          (json-number-text arena (float-literal-text arena num))
                          (int-to-string arena (. num int-value))))
-              (float-str (if (. num is-float) "true" "false"))
-              (raw-str (json-escape-string arena (. num raw))))
-          (string-concat arena
-            (string-concat arena
-              (string-concat arena
-                (string-concat arena
-                  (string-concat arena
-                    (string-concat arena
-                      (string-concat arena
-                        (string-concat arena
-                          (string-concat arena
-                            (string-concat arena "{\"type\":\"Number\",\"value\":" val-str)
-                            ",\"is_float\":")
-                          float-str)
-                        ",\"raw\":")
-                      raw-str)
-                    ",\"line\":")
-                  line-str)
-                ",\"col\":")
-              col-str)
-            "}")))
+              (float-str (if (. num is-float) "true" "false")))
+          (print "{\"type\":\"Number\",\"value\":")
+          (print val-str)
+          (print ",\"is_float\":")
+          (print float-str)
+          (print ",\"raw\":")
+          (print (json-escape-string arena (. num raw)))
+          (json-write-tail (int-to-string arena (. num line)) (int-to-string arena (. num col)))))
 
       ;; List: {"type":"List","items":[...],"line":N,"col":N}
       ((lst lst)
-        (let ((items-json (json-print-list arena (. lst items)))
-              (line-str (int-to-string arena (. lst line)))
-              (col-str (int-to-string arena (. lst col))))
-          (string-concat arena
-            (string-concat arena
-              (string-concat arena
-                (string-concat arena
-                  (string-concat arena
-                    (string-concat arena "{\"type\":\"List\",\"items\":" items-json)
-                    ",\"line\":")
-                  line-str)
-                ",\"col\":")
-              col-str)
-            "}")))))
+        (do
+          (print "{\"type\":\"List\",\"items\":")
+          (json-write-list arena (. lst items))
+          (json-write-tail (int-to-string arena (. lst line)) (int-to-string arena (. lst col)))))))
 )

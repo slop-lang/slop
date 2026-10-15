@@ -12,7 +12,7 @@
                 file-open file-close file-read-all))
   (import types (SExpr))
   (import parser (ParseResult ParseError
-                  parse pretty-print json-print))
+                  parse pretty-print json-write))
 
   ;; FFI for strlen
   (ffi "string.h"
@@ -41,7 +41,7 @@
             (do
               (when (> i 0)
                 (print ","))
-              (print (json-print arena expr))))
+              (json-write arena expr)))
           ((none) (do)))
         (set! i (+ i 1)))
       (println "]")))
