@@ -1,0 +1,26 @@
+;; list-set returns whether the index was in range, and a statement often
+;; discards that (#361). The generated C must not warn about the unused
+;; value under -Wall, so the fixture is compiled with -Werror=unused-value.
+(module list_set_stmt
+  (export main)
+
+  (fn fill ((dst (List Int)) (v Int))
+    (@intent "Set index 0 and discard the flag, in do, when and let bodies")
+    (@spec (((List Int) Int) -> Int))
+    (let ((mut i 0))
+      (do (list-set dst 0 v)
+          (when (> v 0)
+            (list-set dst 0 (+ v 1))
+            (set! i (+ i 1)))
+          (list-set dst 1 v)
+          i)))
+
+  (fn main ()
+    (@intent "Exit 0 when the kept element is the incremented one")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list Int 1 2)))
+        (fill xs 5)
+        (match (list-get xs 0)
+          ((some x) (if (== x 6) 0 1))
+          ((none) 2))))))

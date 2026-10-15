@@ -1131,11 +1131,14 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
  * evaluator: 5.4 KB to 28.8 KB, overflowing an 8 MB stack at a third of the
  * recursion depth). clang keeps those frames small, and inlining the call is
  * slightly faster there, so it is left to inline. clang defines __GNUC__ too,
- * hence the second test. */
+ * hence the second test. gcc warns (-Wattributes) when noinline meets
+ * inline, so under gcc the function is plain static (#361). */
 #if defined(__GNUC__) && !defined(__clang__)
-__attribute__((noinline))
+#define SLOP_GROW_LINKAGE __attribute__((noinline)) static
+#else
+#define SLOP_GROW_LINKAGE static inline
 #endif
-static inline void* slop_list_grow_raw(slop_arena* arena, void* data, size_t* cap,
+SLOP_GROW_LINKAGE void* slop_list_grow_raw(slop_arena* arena, void* data, size_t* cap,
                                        size_t len, size_t elem_size) {
     if (arena == NULL) {
         fprintf(stderr, "SLOP: list-push on a list with no arena "

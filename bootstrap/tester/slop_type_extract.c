@@ -36,7 +36,7 @@ type_extract_TypeRegistry type_extract_make_type_registry_with_imports(slop_aren
 }
 
 void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry* reg, type_extract_TstTypeEntry* entry) {
-    ({ __auto_type _lst_p = &((*reg).types); __auto_type _item = (entry); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+    (void)(({ __auto_type _lst_p = &((*reg).types); __auto_type _item = (entry); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; }));
 }
 
 type_extract_TstTypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TstTypeEntryKind kind) {
