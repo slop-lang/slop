@@ -1,0 +1,26 @@
+name: Runtime ABI
+
+# A pull request that changes src/slop/runtime/slop_runtime.h must either
+# bump SLOP_RUNTIME_ABI or say "ABI: unchanged, <why>" in its body
+# (scripts/check_runtime_abi_bump.sh). `edited` is in the trigger so that
+# adding the line to the body re-runs the check without a new push.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  header-change-has-abi-decision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the base branch
+        run: git fetch --no-tags --depth=1 origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      - name: slop_runtime.h change bumps the ABI or declares it unchanged
+        env:
+          ABI_NOTE: ${{ github.event.pull_request.body }}
+        run: scripts/check_runtime_abi_bump.sh "origin/${{ github.base_ref }}"
