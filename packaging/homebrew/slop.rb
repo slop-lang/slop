@@ -3,8 +3,8 @@ class Slop < Formula
 
   desc "Symbolic LLM-optimized programming language toolchain"
   homepage "https://github.com/slop-lang/slop"
-  url "https://github.com/slop-lang/slop/archive/refs/tags/v0.4.3.tar.gz"
-  sha256 "681e88fd4f8c5765e17e6121174772da66602e4cb204ca9f436c886d9c574093"
+  url "https://github.com/slop-lang/slop/archive/refs/tags/v0.5.0.tar.gz"
+  sha256 "33aa12d594a86364f2c80999a3efbed5ad8d64d6c5f6b18303befcf3e4373958"
   license "Apache-2.0"
 
   depends_on :macos
