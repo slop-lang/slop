@@ -1625,6 +1625,7 @@ void defn_emit_function_def(context_TranspileContext* ctx, slop_string raw_name,
             defn_bind_params_to_scope(ctx, params_expr);
             if (string_eq(fn_name, SLOP_STR("main"))) {
                 context_ctx_emit(ctx, SLOP_STR("uint8_t** argv = (uint8_t**)_c_argv;"));
+                context_ctx_emit(ctx, SLOP_STR("(void)argc; (void)argv;"));
             }
             defn_emit_preconditions(ctx, preconditions);
             if (needs_retval) {

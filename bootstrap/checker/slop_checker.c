@@ -755,9 +755,10 @@ void checker_output_expr_result(slop_arena* arena, uint8_t valid, slop_string in
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(checker_argv_to_string(argv, 1), SLOP_STR("--version"))) {
-            printf("%s\n", "slop-checker 0.4.3");
+            printf("%s\n", "slop-checker 0.5.0");
             return 0;
         }
     }

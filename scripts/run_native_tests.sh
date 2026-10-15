@@ -271,7 +271,8 @@ run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
 
 # ============================================================
 # Generated C and the runtime header must be warning-free (#361): a
-# list-set whose Bool is discarded is cast to void, and the runtime header
+# list-set whose Bool is discarded is cast to void, a main without
+# parameters does not leave argc and argv unused, and the runtime header
 # gives gcc no inline function with noinline.
 WF="$REPO_ROOT/tests/warning-free"
 WF_BUILD="$BUILD_DIR/warning-free"
@@ -279,7 +280,7 @@ rm -rf "$WF_BUILD"
 mkdir -p "$WF_BUILD"
 echo -n "Testing warning-free-list-set... "
 wf_output=$( (uv run slop transpile "$WF/list_set_stmt.slop" -o "$WF_BUILD/list_set_stmt.c" \
-    && cc -Wall -Werror=unused-value -I "$RUNTIME_DIR" -c -o "$WF_BUILD/list_set_stmt.o" "$WF_BUILD/list_set_stmt.c" \
+    && cc -Wall -Wextra -Werror -I "$RUNTIME_DIR" -c -o "$WF_BUILD/list_set_stmt.o" "$WF_BUILD/list_set_stmt.c" \
     && uv run slop build "$WF/list_set_stmt.slop" -o "$WF_BUILD/list_set_stmt" \
     && "$WF_BUILD/list_set_stmt") 2>&1 )
 if [ $? -eq 0 ]; then

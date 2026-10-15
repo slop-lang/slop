@@ -216,9 +216,10 @@ uint8_t tester_main_collect_args(slop_arena* arena, int64_t argc, uint8_t** argv
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(std_strlib_cstring_to_string(argv[1]), SLOP_STR("--version"))) {
-            tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.4.3\n").data)));
+            tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.5.0\n").data)));
             return 0;
         }
     }

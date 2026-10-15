@@ -1133,9 +1133,10 @@ uint8_t compiler_register_package_flags(slop_arena* arena, context_TranspileCont
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(compiler_argv_to_string(argv, 1), SLOP_STR("--version"))) {
-            printf("%s\n", "slop-compiler 0.4.3");
+            printf("%s\n", "slop-compiler 0.5.0");
             return 0;
         }
         if (string_eq(compiler_argv_to_string(argv, 1), SLOP_STR("--runtime-abi"))) {
