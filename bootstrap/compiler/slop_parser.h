@@ -171,8 +171,9 @@ slop_string parser_float_literal_text(slop_arena* arena, types_SExprNumber num);
 slop_string parser_json_number_text(slop_arena* arena, slop_string text);
 slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr);
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s);
-slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr items);
-slop_string parser_json_print(slop_arena* arena, types_SExpr* expr);
+void parser_json_write_tail(slop_string line_str, slop_string col_str);
+void parser_json_write_list(slop_arena* arena, slop_list_types_SExpr_ptr items);
+void parser_json_write(slop_arena* arena, types_SExpr* expr);
 
 #ifndef SLOP_OPTION_PARSER_TOKEN_DEFINED
 #define SLOP_OPTION_PARSER_TOKEN_DEFINED

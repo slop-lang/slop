@@ -57,8 +57,9 @@ slop_string parser_float_literal_text(slop_arena* arena, types_SExprNumber num);
 slop_string parser_json_number_text(slop_arena* arena, slop_string text);
 slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr);
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s);
-slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr items);
-slop_string parser_json_print(slop_arena* arena, types_SExpr* expr);
+void parser_json_write_tail(slop_string line_str, slop_string col_str);
+void parser_json_write_list(slop_arena* arena, slop_list_types_SExpr_ptr items);
+void parser_json_write(slop_arena* arena, types_SExpr* expr);
 
 uint8_t parser_number_text_is_float(slop_string s) {
     {
@@ -1287,24 +1288,18 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                     return parser_string_copy(arena, SLOP_STR("()"));
                 } else {
                     {
-                        __auto_type result = parser_string_copy(arena, SLOP_STR("("));
+                        __auto_type parts = ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 0 * sizeof(slop_string)), .len = 0, .cap = 0, .arena = arena }; _ll; });
                         int64_t i = 0;
                         while (i < len) {
                             __auto_type _mv_118 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_118.has_value) {
                                 __auto_type child = _mv_118.value;
-                                {
-                                    __auto_type child_str = parser_pretty_print(arena, child);
-                                    if (i > 0) {
-                                        result = string_concat(arena, result, SLOP_STR(" "));
-                                    }
-                                    result = string_concat(arena, result, child_str);
-                                }
+                                ({ __auto_type _lst_p = &(parts); __auto_type _item = (parser_pretty_print(arena, child)); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                             } else if (!_mv_118.has_value) {
                             }
                             i = (i + 1);
                         }
-                        return string_concat(arena, result, SLOP_STR(")"));
+                        return string_concat(arena, string_concat(arena, SLOP_STR("("), std_strlib_join(arena, parts, SLOP_STR(" "))), SLOP_STR(")"));
                     }
                 }
             }
@@ -1366,82 +1361,78 @@ slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
     }
 }
 
-slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr items) {
+void parser_json_write_tail(slop_string line_str, slop_string col_str) {
+    printf("%s", ",\"line\":");
+    printf("%.*s", (int)(line_str).len, (line_str).data);
+    printf("%s", ",\"col\":");
+    printf("%.*s", (int)(col_str).len, (col_str).data);
+    printf("%s", "}");
+}
+
+void parser_json_write_list(slop_arena* arena, slop_list_types_SExpr_ptr items) {
     {
         __auto_type len = ((int64_t)((items).len));
-        if (len == 0) {
-            return parser_string_copy(arena, SLOP_STR("[]"));
-        } else {
-            {
-                __auto_type result = parser_string_copy(arena, SLOP_STR("["));
-                int64_t i = 0;
-                while (i < len) {
-                    __auto_type _mv_119 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_119.has_value) {
-                        __auto_type child = _mv_119.value;
-                        {
-                            __auto_type child_json = parser_json_print(arena, child);
-                            if (i > 0) {
-                                result = string_concat(arena, result, SLOP_STR(","));
-                            }
-                            result = string_concat(arena, result, child_json);
-                        }
-                    } else if (!_mv_119.has_value) {
-                    }
-                    i = (i + 1);
+        int64_t i = 0;
+        printf("%s", "[");
+        while (i < len) {
+            __auto_type _mv_119 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_119.has_value) {
+                __auto_type child = _mv_119.value;
+                if (i > 0) {
+                    printf("%s", ",");
                 }
-                return string_concat(arena, result, SLOP_STR("]"));
+                parser_json_write(arena, child);
+            } else if (!_mv_119.has_value) {
             }
+            i = (i + 1);
         }
+        printf("%s", "]");
     }
 }
 
-slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
+void parser_json_write(slop_arena* arena, types_SExpr* expr) {
     __auto_type _mv_120 = (*expr);
     switch (_mv_120.tag) {
         case types_SExpr_sym:
         {
             __auto_type sym = _mv_120.data.sym;
-            {
-                __auto_type escaped = parser_json_escape_string(arena, sym.name);
-                __auto_type line_str = int_to_string(arena, sym.line);
-                __auto_type col_str = int_to_string(arena, sym.col);
-                return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"Symbol\",\"name\":"), escaped), SLOP_STR(",\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
-            }
+            printf("%s", "{\"type\":\"Symbol\",\"name\":");
+            printf("%.*s", (int)(parser_json_escape_string(arena, sym.name)).len, (parser_json_escape_string(arena, sym.name)).data);
+            parser_json_write_tail(int_to_string(arena, sym.line), int_to_string(arena, sym.col));
+            break;
         }
         case types_SExpr_str:
         {
             __auto_type str = _mv_120.data.str;
-            {
-                __auto_type escaped = parser_json_escape_string(arena, str.value);
-                __auto_type line_str = int_to_string(arena, str.line);
-                __auto_type col_str = int_to_string(arena, str.col);
-                return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"String\",\"value\":"), escaped), SLOP_STR(",\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
-            }
+            printf("%s", "{\"type\":\"String\",\"value\":");
+            printf("%.*s", (int)(parser_json_escape_string(arena, str.value)).len, (parser_json_escape_string(arena, str.value)).data);
+            parser_json_write_tail(int_to_string(arena, str.line), int_to_string(arena, str.col));
+            break;
         }
         case types_SExpr_num:
         {
             __auto_type num = _mv_120.data.num;
             {
-                __auto_type line_str = int_to_string(arena, num.line);
-                __auto_type col_str = int_to_string(arena, num.col);
                 __auto_type val_str = ((num.is_float) ? parser_json_number_text(arena, parser_float_literal_text(arena, num)) : int_to_string(arena, num.int_value));
                 __auto_type float_str = ((num.is_float) ? SLOP_STR("true") : SLOP_STR("false"));
-                __auto_type raw_str = parser_json_escape_string(arena, num.raw);
-                return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"Number\",\"value\":"), val_str), SLOP_STR(",\"is_float\":")), float_str), SLOP_STR(",\"raw\":")), raw_str), SLOP_STR(",\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
+                printf("%s", "{\"type\":\"Number\",\"value\":");
+                printf("%.*s", (int)(val_str).len, (val_str).data);
+                printf("%s", ",\"is_float\":");
+                printf("%.*s", (int)(float_str).len, (float_str).data);
+                printf("%s", ",\"raw\":");
+                printf("%.*s", (int)(parser_json_escape_string(arena, num.raw)).len, (parser_json_escape_string(arena, num.raw)).data);
+                parser_json_write_tail(int_to_string(arena, num.line), int_to_string(arena, num.col));
             }
+            break;
         }
         case types_SExpr_lst:
         {
             __auto_type lst = _mv_120.data.lst;
-            {
-                __auto_type items_json = parser_json_print_list(arena, lst.items);
-                __auto_type line_str = int_to_string(arena, lst.line);
-                __auto_type col_str = int_to_string(arena, lst.col);
-                return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"List\",\"items\":"), items_json), SLOP_STR(",\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
-            }
+            printf("%s", "{\"type\":\"List\",\"items\":");
+            parser_json_write_list(arena, lst.items);
+            parser_json_write_tail(int_to_string(arena, lst.line), int_to_string(arena, lst.col));
+            break;
         }
     }
-    SLOP_UNREACHABLE();
 }
 

@@ -25,7 +25,7 @@ void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr ex
                 if (i > 0) {
                     printf("%s", ",");
                 }
-                printf("%.*s", (int)(parser_json_print(arena, expr)).len, (parser_json_print(arena, expr)).data);
+                parser_json_write(arena, expr);
             } else if (!_mv_72.has_value) {
             }
             i = (i + 1);
