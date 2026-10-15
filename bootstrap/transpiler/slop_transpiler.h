@@ -286,6 +286,7 @@ void transpiler_emit_pending_container_deps(context_TranspileContext* ctx, types
 void transpiler_emit_option_by_c_name(context_TranspileContext* ctx, slop_string c_name);
 void transpiler_emit_list_by_c_name(context_TranspileContext* ctx, slop_string c_name);
 void transpiler_emit_struct_union_types_sorted(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+void transpiler_report_unemitted_struct_types(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start, int64_t len, slop_list_int emitted);
 uint8_t transpiler_has_unemitted_struct_types(slop_list_types_SExpr_ptr items, int64_t start, int64_t len, slop_list_int emitted);
 void transpiler_break_list_cycles(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start, int64_t len, slop_list_int emitted);
 slop_list_string transpiler_find_blocking_list_deps(context_TranspileContext* ctx, types_SExpr* type_def);

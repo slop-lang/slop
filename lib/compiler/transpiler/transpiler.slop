@@ -21,7 +21,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-find-type-binding ctx-find-own-type ctx-module-defines-types ctx-lookup-type-in-module ctx-type-name-exists ctx-set-pos ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type ctx-module-c-prefix ctx-type-id ctx-is-package-type
+                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-find-type-binding ctx-find-own-type ctx-c-name-home ctx-module-defines-types ctx-lookup-type-in-module ctx-type-name-exists ctx-set-pos ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type ctx-module-c-prefix ctx-type-id ctx-is-package-type
                    ctx-add-include ctx-get-includes ctx-register-enum-variant ctx-register-enum-variant-in
                    ctx-register-union-variant ctx-get-union-variants UnionVariantEntry
                    ctx-register-result-type ctx-has-result-type ctx-get-result-types ResultType
@@ -4556,7 +4556,43 @@
                       (list-push emitted i)
                       (set! current-count (+ current-count 1))))
                   ((none) (do))))
-              (set! i (+ i 1))))))))
+              (set! i (+ i 1)))))
+        ;; Whatever is still stalled would be a typedef with no struct body:
+        ;; say so here rather than let the C compiler find it (#371)
+        (when (has-unemitted-struct-types items start len emitted)
+          (report-unemitted-struct-types ctx items start len emitted)))))
+
+  (fn report-unemitted-struct-types ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr)))
+                                     (start Int) (len Int) (emitted (List Int)))
+    (@intent "Report every struct/union type the sort could not emit, naming the field types it waited on")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int Int (List Int)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((mut i start))
+      (while (< i len)
+        (when (not (index-in-list emitted i))
+          (match (list-get items i)
+            ((some item)
+              (when (and (is-type-def item) (is-struct-type-def item))
+                (let ((type-name (match (get-type-name item) ((some n) n) ((none) "?")))
+                      (field-types (get-type-field-types ctx item))
+                      (dep-len (list-len field-types))
+                      (mut waiting "")
+                      (mut j 0))
+                  (while (< j dep-len)
+                    (match (list-get field-types j)
+                      ((some dep)
+                        (when (and (> (string-len dep) 0) (not (type-is-available ctx dep)))
+                          (set! waiting (if (== (string-len waiting) 0)
+                                          dep
+                                          (ctx-str3 ctx waiting ", " dep)))))
+                      ((none) (do)))
+                    (set! j (+ j 1)))
+                  (ctx-add-error-at ctx
+                    (ctx-str4 ctx "type " type-name
+                              " cannot be defined: no definition was emitted for its field type(s) " waiting)
+                    (ctx-sexpr-line item) (ctx-sexpr-col item)))))
+            ((none) (do))))
+        (set! i (+ i 1)))))
 
   (fn has-unemitted-struct-types ((items (List (Ptr SExpr))) (start Int) (len Int) (emitted (List Int)))
     (@intent "Check if any struct/union types remain unemitted after topo sort")
@@ -5190,19 +5226,25 @@
       false  ;; Generated types are never "imported"
       (match (ctx-get-module ctx)
         ((some current-mod)
-          ;; Convert module name to C-style (replace - with _) before comparing
-          ;; Module names use hyphens (type-extract) but C types use underscores (type_extract_)
-          (let ((arena (. (deref ctx) arena))
-                (c-mod (ctx-module-c-prefix ctx current-mod))
-                (current-prefix (ctx-str ctx c-mod "_")))
-            ;; If type has an underscore but doesn't start with current module prefix,
-            ;; it's an imported type (from a different module's header)
-            (let ((underscore-pos (find-char type-name (cast U8 95))))  ;; 95 is ASCII for '_'
-              (if (> underscore-pos 0)
-                ;; Has underscore - check if it starts with current module prefix
-                (not (starts-with type-name current-prefix))
-                ;; No underscore - not a prefixed type, treat as local
-                false))))
+          ;; The registry says which module's header holds the type. The
+          ;; prefix alone cannot: a module named like its package has the
+          ;; prefix pkg_, and its sibling's pkg_types_Pair starts with it (#371)
+          (match (ctx-c-name-home ctx type-name)
+            ((some home) (not (string-eq home current-mod)))
+            ((none)
+              ;; Convert module name to C-style (replace - with _) before comparing
+              ;; Module names use hyphens (type-extract) but C types use underscores (type_extract_)
+              (let ((arena (. (deref ctx) arena))
+                    (c-mod (ctx-module-c-prefix ctx current-mod))
+                    (current-prefix (ctx-str ctx c-mod "_")))
+                ;; If type has an underscore but doesn't start with current module prefix,
+                ;; it's an imported type (from a different module's header)
+                (let ((underscore-pos (find-char type-name (cast U8 95))))  ;; 95 is ASCII for '_'
+                  (if (> underscore-pos 0)
+                    ;; Has underscore - check if it starts with current module prefix
+                    (not (starts-with type-name current-prefix))
+                    ;; No underscore - not a prefixed type, treat as local
+                    false))))))
         ((none) false))))
 
   (fn find-char ((s String) (ch U8))

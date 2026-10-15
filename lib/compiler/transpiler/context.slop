@@ -19,7 +19,7 @@
     ctx-bind-var ctx-lookup-var
     ;; Type/function registration
     ctx-register-type ctx-lookup-type TypeLookup
-    ctx-find-type-binding ctx-find-own-type ctx-module-defines-types ctx-lookup-type-in-module ctx-resolve-type ctx-resolve-type-at
+    ctx-find-type-binding ctx-find-own-type ctx-c-name-home ctx-module-defines-types ctx-lookup-type-in-module ctx-resolve-type ctx-resolve-type-at
     ctx-type-name-exists ctx-set-pos
     ctx-register-func ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry
     ctx-register-field-type ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-for-slop ctx-lookup-field-slop-type-for-slop ctx-lookup-field-type-by-index ctx-get-fields-for-type
@@ -1029,6 +1029,27 @@
     (@spec (((Ptr TranspileContext) String) -> (Option TypeEntry)))
     (@pre {ctx != nil})
     (find-type-entry ctx name (ctx-current-module-name ctx) true))
+
+  (fn ctx-c-name-home ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "The module whose header defines the type with this C name, if one is registered: its definer, or the source of an import of it (#371)")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre {ctx != nil})
+    ;; The prefix of a C name cannot say where it lives: a module named like
+    ;; its package has the prefix pkg_, and its sibling's pkg_types_Pair
+    ;; starts with it. The registry can: an import carries its source module.
+    (let ((types (. (deref ctx) types))
+          (mut i (- (cast Int (list-len types)) 1))
+          (mut result (Option String) none))
+      (while (and (>= i 0) (match result ((none) true) ((some _) false)))
+        (match (list-get types (cast (Int 0 ..) i))
+          ((some entry)
+            (when (string-eq (. entry c-name) c-name)
+              (set! result (some (if (== (string-len (. entry imported-from)) 0)
+                                   (. entry owner-module)
+                                   (. entry imported-from))))))
+          ((none) (do)))
+        (set! i (- i 1)))
+      result))
 
   (fn ctx-module-defines-types ((ctx (Ptr TranspileContext)) (mod String))
     (@intent "Check whether any type definition owned by module mod is registered")

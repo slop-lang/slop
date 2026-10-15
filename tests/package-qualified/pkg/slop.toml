@@ -1,0 +1,4 @@
+# A package named like its entry module: pkg's own names collapse to pkg_X,
+# the same prefix its sibling types' pkg_types_X names start with (#371)
+[project]
+name = "pkg"

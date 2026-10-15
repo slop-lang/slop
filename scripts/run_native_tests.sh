@@ -335,6 +335,12 @@ run_lib_test "$PQ/pkg-a/main.slop" "package-qualified-exe" -I "$PQ/pkg-a"
 # user types on both sides of an import
 run_lib_test "$PQ/slop-c/main.slop" "package-qualified-slop-prefix" -I "$PQ/slop-c"
 
+# A module named like its package: its names are pkg_X and its sibling's
+# pkg_types_X, so the prefix cannot tell the two apart. The sibling's types
+# held by value, in records, a union and containers, must still be emitted
+# and ordered on the importing side (#371)
+run_lib_test "$PQ/pkg/pkg.slop" "package-qualified-module-named-like-package" -I "$PQ/pkg"
+
 # What the names are: qualified by the package when the module has one, by
 # the module alone when it has none, and a :c-name untouched either way
 echo -n "Testing package-qualified-names... "
@@ -559,6 +565,11 @@ else
 fi
 
 TNEG="$REPO_ROOT/tests/type-resolution-negative"
+# A field type nothing defines: the transpiler names it, rather than leaving
+# the C compiler to find a typedef with no struct body (#371)
+run_negative_build_test "$TNEG/field-undefined.slop" "type-field-undefined" \
+    "field-undefined.slop:4:3: error: type Holder cannot be defined: no definition was emitted for its field type(s) Missing" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 run_negative_build_test "$TNEG/both.slop" "type-import-ambiguous" \
     "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \
     -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
