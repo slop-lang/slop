@@ -1,0 +1,29 @@
+;; Two inference gaps (#362): << typed as Unknown (so a branch of Int and
+;; (<< 1 k) differed), and a (list T ...) literal had no element type for
+;; for-each. The check must be warning-free and the program must run.
+(module shift_list
+  (export main)
+
+  (fn shift ((k Int))
+    (@intent "1 << k, or 0 past the width: an Int either way")
+    (@spec ((Int) -> Int))
+    (if (>= k 62) 0 (<< 1 k)))
+
+  (fn masked ((a Int) (b Int))
+    (@intent "The other bitwise operators type as Int too")
+    (@spec ((Int Int) -> Int))
+    (+ (& a b) (| a b) (^ a b) (>> a 1)))
+
+  (fn each ()
+    (@intent "A typed list literal, iterated through a let and directly")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((mut n 0) (xs (list String "a" "bb")))
+        (do (for-each (x xs) (set! n (+ n (string-len x))))
+            (for-each (y (list String "ccc")) (set! n (+ n (string-len y))))
+            n))))
+
+  (fn main ()
+    (@intent "Exit 0 when the values agree")
+    (@spec (() -> Int))
+    (if (and (== (shift 3) 8) (== (masked 6 3) 17) (== (each) 6)) 0 1)))
