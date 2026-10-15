@@ -613,6 +613,7 @@ void context_ctx_register_type(context_TranspileContext* ctx, context_TypeEntry 
 slop_option_context_TypeEntry context_find_type_entry(context_TranspileContext* ctx, slop_string name, slop_string mod, uint8_t definition);
 slop_option_context_TypeEntry context_ctx_find_type_binding(context_TranspileContext* ctx, slop_string name, slop_string mod);
 slop_option_context_TypeEntry context_ctx_find_own_type(context_TranspileContext* ctx, slop_string name);
+slop_option_string context_ctx_c_name_home(context_TranspileContext* ctx, slop_string c_name);
 uint8_t context_ctx_module_defines_types(context_TranspileContext* ctx, slop_string mod);
 slop_option_context_TypeEntry context_ctx_lookup_type_in_module(context_TranspileContext* ctx, slop_string name, slop_string mod);
 context_TypeLookup context_ctx_resolve_type(context_TranspileContext* ctx, slop_string name);

@@ -1,0 +1,9 @@
+;; A record field of a type nothing defines: the transpiler must say so,
+;; not emit a typedef with no struct body for the C compiler to reject (#371)
+(module main
+  (type Holder (record (v Missing)))
+
+  (fn main ()
+    (@intent "Never built")
+    (@spec (() -> Int))
+    0))

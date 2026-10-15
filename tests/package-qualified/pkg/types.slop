@@ -1,0 +1,6 @@
+;; The sibling module of package pkg: its names are pkg_types_Kind and
+;; pkg_types_Pair, which start with the prefix pkg_ of module pkg itself.
+(module types
+  (export Kind Pair)
+  (type Kind (enum a b))
+  (type Pair (record (x Int) (y Int))))

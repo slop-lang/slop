@@ -1,0 +1,62 @@
+;; A module named like its package: its own names are pkg_X and its
+;; sibling's are pkg_types_X, so a C name's prefix cannot say which header
+;; defines it. The sibling's types held by value, in records, in a union and
+;; in containers, must still be emitted and ordered here (#371).
+(module pkg
+  (import types (Kind Pair))
+
+  (type Local (record (n Int)))
+  (type UsesEnum (record (k Kind)))
+  (type UsesRecord (record (p Pair)))
+  (type UsesLocal (record (l Local)))
+  (type UsesList (record (ps (List Pair))))
+  (type UsesOption (record (k (Option Kind))))
+  (type Either (union (left Pair) (right Local)))
+
+  (fn first ((u UsesRecord))
+    (@intent "The x of the pair a UsesRecord holds")
+    (@spec ((UsesRecord) -> Int))
+    (. (. u p) x))
+
+  (fn either-x ((e Either))
+    (@intent "The x of a left pair, the n of a right local")
+    (@spec ((Either) -> Int))
+    (match e
+      ((left p) (. p x))
+      ((right l) (. l n))))
+
+  (fn list-sum ((u UsesList))
+    (@intent "The sum of x over the pairs a UsesList holds")
+    (@spec ((UsesList) -> Int))
+    (let ((len (list-len (. u ps)))
+          (mut total 0)
+          (mut i 0))
+      (while (< i len)
+        (match (list-get (. u ps) i)
+          ((some p) (set! total (+ total (. p x))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      total))
+
+  (fn main ()
+    (@intent "Exit 0 when every field of a sibling type reads back")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((u (UsesRecord (Pair 3 4)))
+            (e (UsesEnum 'b))
+            (ka Kind 'a)
+            (o (UsesOption (some ka)))
+            (mut ps (list Pair)))
+        (list-push ps (Pair 5 6))
+        (list-push ps (Pair 7 8))
+        (let ((ul (UsesList ps))
+              (ei (union-new Either left (Pair 9 10)))
+              (er (union-new Either right (Local 11))))
+          (cond
+            ((!= (first u) 3) 1)
+            ((!= (. e k) 'b) 2)
+            ((match (. o k) ((some k) (!= k 'a)) ((none) true)) 3)
+            ((!= (list-sum ul) 12) 4)
+            ((!= (either-x ei) 9) 5)
+            ((!= (either-x er) 11) 6)
+            (else 0)))))))
