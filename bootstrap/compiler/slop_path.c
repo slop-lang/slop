@@ -12,15 +12,15 @@ slop_string std_path_path_dirname(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR(".");
         } else {
-            __auto_type _mv_917 = std_strlib_last_index_of(path, SLOP_STR("/"));
-            if (_mv_917.has_value) {
-                __auto_type idx = _mv_917.value;
+            __auto_type _mv_918 = std_strlib_last_index_of(path, SLOP_STR("/"));
+            if (_mv_918.has_value) {
+                __auto_type idx = _mv_918.value;
                 if (idx == 0) {
                     return SLOP_STR("/");
                 } else {
                     return std_strlib_substring(arena, path, 0, ((int64_t)(idx)));
                 }
-            } else if (!_mv_917.has_value) {
+            } else if (!_mv_918.has_value) {
                 return SLOP_STR(".");
             }
             SLOP_UNREACHABLE();
@@ -51,9 +51,9 @@ slop_string std_path_path_basename(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_918 = std_strlib_last_index_of(path, SLOP_STR("/"));
-            if (_mv_918.has_value) {
-                __auto_type idx = _mv_918.value;
+            __auto_type _mv_919 = std_strlib_last_index_of(path, SLOP_STR("/"));
+            if (_mv_919.has_value) {
+                __auto_type idx = _mv_919.value;
                 {
                     __auto_type start = (idx + 1);
                     __auto_type remaining = (len - start);
@@ -63,7 +63,7 @@ slop_string std_path_path_basename(slop_arena* arena, slop_string path) {
                         return std_strlib_substring(arena, path, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:56"))), ((int64_t)(SLOP_RANGE(int64_t, remaining, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:80"))));
                     }
                 }
-            } else if (!_mv_918.has_value) {
+            } else if (!_mv_919.has_value) {
                 return path;
             }
             SLOP_UNREACHABLE();
@@ -77,9 +77,9 @@ slop_string std_path_path_extension(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_919 = std_strlib_last_index_of(path, SLOP_STR("."));
-            if (_mv_919.has_value) {
-                __auto_type idx = _mv_919.value;
+            __auto_type _mv_920 = std_strlib_last_index_of(path, SLOP_STR("."));
+            if (_mv_920.has_value) {
+                __auto_type idx = _mv_920.value;
                 {
                     __auto_type ext_len = (len - idx);
                     if (ext_len <= 0) {
@@ -88,7 +88,7 @@ slop_string std_path_path_extension(slop_arena* arena, slop_string path) {
                         return std_strlib_substring(arena, path, ((int64_t)(idx)), ((int64_t)(SLOP_RANGE(int64_t, ext_len, 1, 0, 0, 0, "(Int 0 ..) at path.slop:96:78"))));
                     }
                 }
-            } else if (!_mv_919.has_value) {
+            } else if (!_mv_920.has_value) {
                 return SLOP_STR("");
             }
             SLOP_UNREACHABLE();

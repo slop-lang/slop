@@ -1256,8 +1256,8 @@
                       ((ends-with c-type "*")
                         (let ((base-type (strip-pointer-suffix arena c-type)))
                           (ctx-str3 ctx "slop_option_" base-type "_ptr")))
-                      ;; Other custom types: build slop_option_<typename>
-                      (else (ctx-str3 ctx "slop_option_" c-type "")))))
+                      ;; Other types: named from the type as a parameter's is (#363)
+                      (else (c-type-to-option-type-name ctx c-type)))))
                 ;; Unknown variable - emit error
                 ((none)
                   (do
@@ -1418,6 +1418,18 @@
                     ;; type in the first argument rather than in the head (#112).
                     ((or (string-eq op "record-new") (string-eq op "union-new"))
                       (option-type-from-ctor-arg ctx items op))
+                    ;; (list-new arena T) and (list T ...) are (List T): their
+                    ;; option is named from the SLOP type, slop_option_list_<T>,
+                    ;; as a parameter's is (#363)
+                    ((or (string-eq op "list-new") (string-eq op "list"))
+                      (match (list-get items (if (string-eq op "list-new") 2 1))
+                        ((some type-expr)
+                          (c-type-to-option-type-name ctx
+                            (ctx-str3 ctx "slop_list_" (ctx-type-id ctx (to-c-type-prefixed ctx type-expr)) "")))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx (ctx-str3 ctx "'" op "' names no element type for Option type inference") line col)
+                            "__type_error__"))))
                     ;; Check function registry for return type
                     (else
                       (match (ctx-lookup-func ctx op)
@@ -1437,8 +1449,8 @@
                                     (let ((ctx-arena (. (deref ctx) arena))
                                           (base-type (strip-pointer-suffix ctx-arena ret-type)))
                                       (ctx-str3 ctx "slop_option_" base-type "_ptr")))
-                                  ;; Other types - generate slop_option_<type>
-                                  (else (ctx-str3 ctx "slop_option_" ret-type ""))))
+                                  ;; Other types: named from the type as a parameter's is (#363)
+                                  (else (c-type-to-option-type-name ctx ret-type))))
                               ;; No return type info - emit error
                               (else
                                 (do
@@ -4967,8 +4979,8 @@
                                       (let ((ctx-arena (. (deref ctx) arena))
                                             (base-type (strip-pointer-suffix ctx-arena val-type)))
                                         (ctx-str3 ctx "slop_option_" base-type "_ptr")))
-                                    ;; Other types - generate slop_option_<type>
-                                    (else (ctx-str3 ctx "slop_option_" val-type "")))))
+                                    ;; Other types: named from the type as a parameter's is (#363)
+                                    (else (c-type-to-option-type-name ctx val-type)))))
                               ((none)
                                 (do (ctx-add-error-at ctx "some constructor: missing value expression" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
                                   "__type_error__")))))

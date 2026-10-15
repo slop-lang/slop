@@ -1,0 +1,45 @@
+;; An (Option (List T)) built inline from a call, or from list-new, must have
+;; the same C type as the (Option (List T)) parameter it is passed to (#363):
+;; slop_option_list_int, named from the SLOP type, not slop_option_slop_list_int.
+(module option_of_list
+  (export main)
+
+  (fn take ((x (Option (List Int))))
+    (@intent "The list's length, or -1")
+    (@spec (((Option (List Int))) -> Int))
+    (match x
+      ((some l) (cast Int (list-len l)))
+      ((none) -1)))
+
+  (fn mk ((arena Arena) (n Int))
+    (@intent "A list of n zeros")
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (let ((mut xs (list-new arena Int))
+          (mut i 0))
+      (while (< i n)
+        (list-push xs 0)
+        (set! i (+ i 1)))
+      xs))
+
+  (fn pick ((arena Arena) (c Bool))
+    (@intent "An inline option of a call's list, as an argument")
+    (@spec ((Arena Bool) -> Int))
+    (@alloc arena)
+    (take (if c (some (mk arena 3)) (none))))
+
+  (fn fresh ((arena Arena))
+    (@intent "An inline option of list-new, as an argument")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (take (some (list-new arena Int))))
+
+  (fn main ()
+    (@intent "Exit 0 when both inline options reach take with their lists")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (if (and (== (pick arena true) 3)
+               (== (pick arena false) -1)
+               (== (fresh arena) 0))
+        0
+        1))))
