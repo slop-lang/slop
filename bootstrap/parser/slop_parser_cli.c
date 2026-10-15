@@ -52,9 +52,10 @@ void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exp
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(parser_cli_argv_to_string(argv, 1), SLOP_STR("--version"))) {
-            printf("%s\n", "slop-parser 0.4.3");
+            printf("%s\n", "slop-parser 0.5.0");
             return 0;
         }
     }

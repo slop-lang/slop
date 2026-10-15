@@ -215,6 +215,7 @@ slop_string transpiler_main_extract_module_name(slop_list_types_SExpr_ptr exprs)
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    (void)argc; (void)argv;
     if (argc < 2) {
         transpiler_main_print_str(((char*)(SLOP_STR("Usage: slop-transpiler <input.slop> [input2.slop ...]\n").data)));
         return 1;
