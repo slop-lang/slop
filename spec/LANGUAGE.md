@@ -800,7 +800,9 @@ arena is a use-after-free. The compiler does not yet reject it.
 default; an allocation past the cap aborts with `SLOP: arena allocation cap
 exceeded`. Raise or lower it with `slop build --arena-cap BYTES` or
 `arena_cap = N` under `[build]` in slop.toml; `--no-arena-cap` (or
-`no_arena_cap = true`) removes it.
+`no_arena_cap = true`) removes it. The native tools themselves are built
+without the cap, so the size of a program they can parse or transpile is
+bounded by the machine, not by this limit.
 
 Named and unnamed arenas can be mixed:
 

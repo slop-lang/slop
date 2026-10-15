@@ -21,6 +21,11 @@
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wno-unused-function -Wno-unused-variable -Wno-return-type -Wno-pointer-sign
 CFLAGS += -DSLOP_DEBUG
+# The tools are built without the runtime's 256 MB arena cap, so a large
+# program's parse or transpile cannot abort for want of a limit (#372). Kept
+# apart from CFLAGS, which the release target replaces and the environment
+# may override.
+TOOL_DEFS = -DSLOP_ARENA_NO_CAP
 
 # Directories
 BIN_DIR = bin
@@ -75,22 +80,22 @@ $(BIN_DIR):
 
 parser: $(BIN_DIR)
 	@echo "Building parser..."
-	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Iparser -o $(BIN_DIR)/slop-parser $(PARSER_SRCS)
+	$(CC) $(CFLAGS) $(TOOL_DEFS) -I$(RUNTIME_DIR) -Iparser -o $(BIN_DIR)/slop-parser $(PARSER_SRCS)
 	@echo "  -> $(BIN_DIR)/slop-parser"
 
 checker: $(BIN_DIR)
 	@echo "Building checker..."
-	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Ichecker -o $(BIN_DIR)/slop-checker $(CHECKER_SRCS)
+	$(CC) $(CFLAGS) $(TOOL_DEFS) -I$(RUNTIME_DIR) -Ichecker -o $(BIN_DIR)/slop-checker $(CHECKER_SRCS)
 	@echo "  -> $(BIN_DIR)/slop-checker"
 
 compiler: $(BIN_DIR)
 	@echo "Building compiler..."
-	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Icompiler -o $(BIN_DIR)/slop-compiler $(COMPILER_SRCS)
+	$(CC) $(CFLAGS) $(TOOL_DEFS) -I$(RUNTIME_DIR) -Icompiler -o $(BIN_DIR)/slop-compiler $(COMPILER_SRCS)
 	@echo "  -> $(BIN_DIR)/slop-compiler"
 
 tester: $(BIN_DIR)
 	@echo "Building tester..."
-	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Itester -o $(BIN_DIR)/slop-tester $(TESTER_SRCS)
+	$(CC) $(CFLAGS) $(TOOL_DEFS) -I$(RUNTIME_DIR) -Itester -o $(BIN_DIR)/slop-tester $(TESTER_SRCS)
 	@echo "  -> $(BIN_DIR)/slop-tester"
 
 clean:
