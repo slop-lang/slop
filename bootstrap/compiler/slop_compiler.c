@@ -1136,7 +1136,7 @@ int main(int argc, char** _c_argv) {
     (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(compiler_argv_to_string(argv, 1), SLOP_STR("--version"))) {
-            printf("%s\n", "slop-compiler 0.5.0");
+            printf("%s\n", "slop-compiler 0.5.1");
             return 0;
         }
         if (string_eq(compiler_argv_to_string(argv, 1), SLOP_STR("--runtime-abi"))) {
