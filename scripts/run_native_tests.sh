@@ -375,6 +375,40 @@ else
     FAIL_COUNT=$((FAIL_COUNT + 1))
 fi
 
+# A changed slop_runtime.h must bump the ABI number or declare it unchanged;
+# the CI check for that, run here against copies of the header and HEAD
+echo -n "Testing runtime-abi-bump-check... "
+BUMP_DIR="$BUILD_DIR/runtime-abi-bump"
+rm -rf "$BUMP_DIR"
+mkdir -p "$BUMP_DIR"
+BUMP_CHECK="$REPO_ROOT/scripts/check_runtime_abi_bump.sh"
+bump_problem=""
+head_abi=$(sed -n 's/^#define SLOP_RUNTIME_ABI \([0-9][0-9]*\).*/\1/p' "$RUNTIME_DIR/slop_runtime.h")
+git -C "$REPO_ROOT" show "HEAD:src/slop/runtime/slop_runtime.h" > "$BUMP_DIR/same.h"
+{ cat "$BUMP_DIR/same.h"; echo "/* touched */"; } > "$BUMP_DIR/touched.h"
+sed "s/^#define SLOP_RUNTIME_ABI $head_abi\$/#define SLOP_RUNTIME_ABI $((head_abi + 1))/" "$BUMP_DIR/same.h" > "$BUMP_DIR/bumped.h"
+sed "s/^#define SLOP_RUNTIME_ABI $head_abi\$/#define SLOP_RUNTIME_ABI $((head_abi - 100))/" "$BUMP_DIR/same.h" > "$BUMP_DIR/backwards.h"
+if ! SLOP_RUNTIME_HEADER="$BUMP_DIR/same.h" "$BUMP_CHECK" HEAD >/dev/null 2>&1; then
+    bump_problem="rejected an unchanged header"
+elif SLOP_RUNTIME_HEADER="$BUMP_DIR/touched.h" ABI_NOTE="" "$BUMP_CHECK" HEAD >/dev/null 2>&1; then
+    bump_problem="accepted a changed header with no bump and no declaration"
+elif ! SLOP_RUNTIME_HEADER="$BUMP_DIR/touched.h" ABI_NOTE="ABI: unchanged, a comment" "$BUMP_CHECK" HEAD >/dev/null 2>&1; then
+    bump_problem="rejected a changed header declared unchanged"
+elif ! SLOP_RUNTIME_HEADER="$BUMP_DIR/bumped.h" ABI_NOTE="" "$BUMP_CHECK" HEAD >/dev/null 2>&1; then
+    bump_problem="rejected a bumped header"
+elif SLOP_RUNTIME_HEADER="$BUMP_DIR/bumped.h" ABI_NOTE="ABI: unchanged" "$BUMP_CHECK" HEAD >/dev/null 2>&1; then
+    bump_problem="accepted a bump declared unchanged"
+elif SLOP_RUNTIME_HEADER="$BUMP_DIR/backwards.h" ABI_NOTE="" "$BUMP_CHECK" HEAD >/dev/null 2>&1; then
+    bump_problem="accepted an ABI number going backwards"
+fi
+if [ -z "$bump_problem" ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC} ($bump_problem)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 # Generated C compiled against a runtime header of another ABI must fail to
 # compile, whether that header has a different SLOP_RUNTIME_ABI or none
 echo -n "Testing runtime-abi-mismatch (expected to fail)... "

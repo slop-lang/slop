@@ -1031,6 +1031,14 @@ The toolchain's own build observes the check too: after a bump,
 previous runtime header (the bootstrap snapshot's) before rebuilding against
 the current one.
 
+A bump orphans every generated C file until it is regenerated, and a missed
+bump compiles old generated C against a runtime it was not generated for,
+so a change to `slop_runtime.h` must decide between the two explicitly: a
+pull request that changes the header either raises `SLOP_RUNTIME_ABI` (never
+backwards) or carries a line `ABI: unchanged, <why generated code cannot
+tell>` in its body. CI (`scripts/check_runtime_abi_bump.sh`) refuses a header
+change that does neither.
+
 The intern pool (`slop_global_intern_pool`) and the allocation counter
 (`slop_global_allocated`) are one object per program, shared by every
 translation unit, so strings interned by one library's code are the strings

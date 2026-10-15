@@ -37,7 +37,10 @@
  *
  * The transpiler's copy of this number lives in
  * lib/compiler/transpiler/transpiler.slop (RUNTIME_ABI);
- * scripts/check_runtime_abi.sh keeps the two in step.
+ * scripts/check_runtime_abi.sh keeps the two in step. A pull request that
+ * changes this file without bumping the number must say why generated
+ * code cannot tell, in a line of its body starting "ABI: unchanged"
+ * (scripts/check_runtime_abi_bump.sh, run by the Runtime ABI workflow).
  *
  * To bump: change both numbers, run `make build-native` (it builds twice:
  * the compiler in bin/ still generates for the old ABI, so its output is
