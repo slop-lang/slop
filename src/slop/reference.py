@@ -743,6 +743,7 @@ several in scope and none named arena it is an error; pass :arena a, or bind
 All arenas together are capped at 256 MB by default; past it, allocation aborts.
 slop build --arena-cap BYTES or arena_cap = N in slop.toml changes it;
 --no-arena-cap / no_arena_cap = true removes it.
+The native tools (slop-parser, slop-compiler, ...) are built without the cap.
 
 ### Pointer Types
 (Ptr T)                          ; Borrowed, non-owning; may be nil

@@ -1286,6 +1286,38 @@ sys.exit(0 if items == want else 1)'; then
 
 run_parser_output_test
 
+# The shipped tools must not inherit the runtime's 256 MB arena cap (#372).
+# A module of a thousand small functions (5,000 lines) makes a capped
+# slop-parser abort with "arena allocation cap exceeded"; uncapped it parses
+# in well under a second. The compiler needs a far larger program to reach
+# the cap, so its run here only shows the binary built with the same config
+# still works.
+echo -n "Testing native-tools-uncapped... "
+big_module="$BUILD_DIR/big_module.slop"
+{
+    echo "(module big"
+    i=0
+    while [ $i -lt 1000 ]; do
+        echo "  (fn f$i ((a Int) (b Int))"
+        echo "    (@intent \"add then scale\")"
+        echo "    (@spec ((Int Int) -> Int))"
+        echo "    (let ((s (+ a b)) (t (* a b)))"
+        echo "      (if (> s t) (+ s $i) (- t $i))))"
+        i=$((i + 1))
+    done
+    echo ")"
+} > "$big_module"
+big_output=$( ("$REPO_ROOT/bin/slop-parser" "$big_module" > /dev/null \
+    && "$REPO_ROOT/bin/slop-compiler" transpile "$big_module" > /dev/null) 2>&1 )
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "$big_output" | head -5
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 # ============================================================
 # Cleanup and Summary
 # ============================================================

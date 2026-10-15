@@ -11,3 +11,6 @@ entry = "main.slop"
 output = "slop-parser"
 include = ["../common", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
 type = "executable"
+# The toolchain is built without the runtime's 256 MB arena cap: a large
+# program's parse or transpile must not abort for want of a limit (#372)
+no_arena_cap = true
