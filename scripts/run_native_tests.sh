@@ -269,6 +269,53 @@ run_lib_test "$REPO_ROOT/lib/std/json/tests/json_test.slop" "json" \
 run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
     -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib"
 
+# A program that must build, exit 0 and print exactly the expected lines
+run_output_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local expected="$3"
+    local exe_path="$BUILD_DIR/$test_name"
+
+    echo -n "Testing $test_name (output)... "
+    if ! uv run slop build "$test_file" -o "$exe_path" > /dev/null 2>&1; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    local output
+    output=$("$exe_path" 2>&1)
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        echo -e "${RED}FAIL (exit $exit_code)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    elif [ "$output" != "$expected" ]; then
+        echo -e "${RED}FAIL${NC} (expected:"
+        echo "$expected"
+        echo "got:"
+        echo "$output)"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    else
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    fi
+}
+
+# A Unit main exits 0: its last statement is not its exit status, and a bare
+# (return) out of a with-arena frees the arena and still exits 0 (#387)
+run_output_test "$REPO_ROOT/tests/output/unit-main.slop" "unit-main" "early"
+# A record field named none, which the runtime #defines (#352)
+run_output_test "$REPO_ROOT/tests/output/none-field.slop" "none-field" "7
+true"
+# print of an if/cond whose branches are String, Float, Bool or a String
+# alias; and a String argument evaluated once (#376)
+run_output_test "$REPO_ROOT/tests/output/print-if.slop" "print-if" "yes
+2.500000
+true
+few
+some
+called
+noisy"
+
 # ============================================================
 # Generated C and the runtime header must be warning-free (#361): a
 # list-set whose Bool is discarded is cast to void, a main without

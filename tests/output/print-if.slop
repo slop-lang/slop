@@ -1,0 +1,29 @@
+;; print of an if, cond or match picks its format from the checker's type,
+;; and a String argument is evaluated once (#376). Expected output:
+;; yes / 2.500000 / true / few / some / called / noisy
+(module print-if
+  (export main)
+
+  (type Label String)
+
+  (fn noisy ()
+    (@intent "Print called, then give a string")
+    (@spec (() -> String))
+    (println "called")
+    "noisy")
+
+  (fn label-for ((n Int))
+    (@intent "A Label for n")
+    (@spec ((Int) -> Label))
+    (if (> n 0) "some" "none"))
+
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Print an if, cond and alias of each printable type")
+    (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    (println (if (> argc 0) "yes" "no"))
+    (println (if (> argc 0) 2.5 1.0))
+    (println (if (> argc 0) true false))
+    (println (cond ((> argc 5) "many") (else "few")))
+    (println (if (> argc 0) (label-for argc) (label-for 0)))
+    (println (noisy))
+    0))

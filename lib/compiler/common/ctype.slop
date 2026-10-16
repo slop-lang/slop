@@ -74,7 +74,11 @@
         (string-eq name "volatile")
         (string-eq name "while")
         (string-eq name "inline")
-        (string-eq name "restrict")))
+        (string-eq name "restrict")
+        ;; Not C, but the runtime #defines none as an object-like macro, so a
+        ;; field named none is rewritten in C (#352). some/ok/error are
+        ;; function-like macros and only expand before a '('.
+        (string-eq name "none")))
 
   ;; ============================================================
   ;; Builtin Type Mapping

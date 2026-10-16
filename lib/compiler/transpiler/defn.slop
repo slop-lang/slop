@@ -1026,15 +1026,20 @@
                                   ((none) raw-return)))
             ;; Special case: main returns int
             (actual-return (if (string-eq fn-name "main") "int" return-type))
+            ;; A main whose @spec returns Unit is int main in C, but its body
+            ;; is a void body: no statement is its value, and every exit
+            ;; leaves through _slop_post to a final return 0 (#387)
+            (main-unit (and (string-eq fn-name "main") (string-eq return-type "void")))
+            (body-return (if main-unit "void" actual-return))
             ;; Build parameter string (special case: main uses standard C types)
             (param-str (if (string-eq fn-name "main")
                          "int argc, char** _c_argv"
                          (build-param-str ctx params-expr)))
             ;; Check if we need _retval (has postconditions/assumptions and non-void return)
             (has-post (or (> (list-len postconditions) 0) (> (list-len assumptions) 0)))
-            (needs-retval (and has-post (not (string-eq actual-return "void")))))
+            (needs-retval (and has-post (not (string-eq body-return "void")))))
         ;; Set current return type for typed none in return statements
-        (ctx-set-current-return-type ctx actual-return)
+        (ctx-set-current-return-type ctx body-return)
         ;; ... and the SLOP one, for the range check on every return (#265)
         (ctx-set-current-return-slop-type ctx (get-slop-return-type ctx items))
         ;; Set current result type if present, otherwise clear any previous
@@ -1077,8 +1082,9 @@
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))
-        ;; Every return leaves through the checks below (ctx-set-post-exit)
-        (when has-post
+        ;; Every return leaves through the checks below (ctx-set-post-exit),
+        ;; and in a Unit main through the return 0 after them
+        (when (or has-post main-unit)
           (ctx-set-post-exit ctx true))
         ;; Set current function C name for FFI shadowing prevention
         (ctx-set-current-fn-c-name ctx fn-name)
@@ -1090,7 +1096,7 @@
         (when needs-retval
           (ctx-set-capture-retval ctx false))
         ;; Where the returns in the body jump to, if any did
-        (when has-post
+        (when (or has-post main-unit)
           (ctx-set-post-exit ctx false)
           (when (ctx-post-exit-used ctx)
             (ctx-emit ctx "_slop_post: ;")))
@@ -1101,6 +1107,8 @@
         ;; Emit return _retval if we captured it
         (when needs-retval
           (ctx-emit ctx "return _retval;"))
+        (when main-unit
+          (ctx-emit ctx "return 0;"))
         ;; Pop scope
         (ctx-pop-scope ctx)
         (ctx-dedent ctx)

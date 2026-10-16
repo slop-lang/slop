@@ -1,0 +1,11 @@
+;; A main whose @spec returns Unit exits 0, whatever its last statement
+;; returns in C (#387). Expected output: early
+(module unit-main
+  (export main)
+
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Print from an early return out of a with-arena, then exit 0")
+    (@spec ((Int (Ptr (Ptr U8))) -> Unit))
+    (with-arena 1024
+      (when (> argc 0) (println "early") (return)))
+    (println "late")))
