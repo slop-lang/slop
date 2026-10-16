@@ -69,13 +69,15 @@ Type checking and transpilation are handled by the native toolchain (`slop-compi
 
 - **paths.py**: Centralized path resolution with SLOP_HOME support
 
+- **scaffold.py**: `slop init`. Lays out a project from the templates in `src/slop/templates/init/` (slop.toml, source, AGENTS.md, CLAUDE.md, `slop-*` skills) and merges the `slop mcp` entry into each agent's MCP config.
+
 - **mcp_server.py**: `slop mcp`, a stdlib-only MCP server on stdio. Its tools (`ref`, `doc`, `check`, `format`) call the same code as the CLI commands of the same names, so a change to one of those commands reaches agents too.
 
 ### Language Spec
 
 The authoritative language specification is in `spec/LANGUAGE.md`. When modifying the language:
 1. Update `spec/LANGUAGE.md`
-2. Update `.claude/skills/slop/SKILL.md` (Claude's quick reference)
+2. Update the agent files `slop init` writes, `src/slop/templates/init/` (AGENTS.md and the `slop-*` skills), if the change affects their advice
 3. Update `src/slop/reference.py` (CLI reference for `slop ref` command)
 4. Update native parser/checker/compiler as needed
 5. Update `tree-sitter-slop/` grammar and highlights if syntax changes

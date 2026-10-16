@@ -303,6 +303,9 @@ slop paths -v                  # Include examples list
 
 # MCP server for coding agents, on stdio (see below)
 slop mcp
+
+# New project, set up for coding agents (see Project Configuration)
+slop init myapp
 ```
 
 ### Coding Agents (`slop mcp`)
@@ -422,7 +425,35 @@ program can fix.
 
 ## Project Configuration
 
-Create a `slop.toml` file to configure your project:
+`slop init` lays out a new project:
+
+```bash
+slop init myapp                # executable: slop.toml, src/main.slop, .gitignore
+slop init mylib --lib          # static library: src/mylib.slop
+cd myapp && slop build && ./build/myapp && slop test
+```
+
+It also sets the project up for coding agents. It writes an `AGENTS.md` and a
+`CLAUDE.md` that imports it. It adds three Claude Code skills under
+`.claude/skills/`: `slop-style`, `slop-pitfalls` and `slop-review`. And it
+registers `slop mcp` (see [Coding Agents](#coding-agents-slop-mcp)) for
+Claude Code (`.mcp.json`, plus `.claude/settings.json` to allow its tools),
+Codex (`.codex/config.toml`), Cursor (`.cursor/mcp.json`) and VS Code
+(`.vscode/mcp.json`).
+
+| Option | Effect |
+|--------|--------|
+| `--name NAME` | Project name; the default is the directory name |
+| `--agents LIST` | Register the MCP server only for these agents, e.g. `claude,codex` |
+| `--no-agents` | Skip AGENTS.md, the skills and the MCP configs |
+| `--agents-only` | Refresh the skills in an existing project after upgrading slop |
+| `--force` | Replace files that already exist |
+
+Running it in an existing directory is safe. It never replaces a file
+without `--force`. It adds its lines to an existing `.gitignore`, and adds the
+`slop` server to existing MCP configs, keeping the servers already there.
+
+`slop.toml` configures the project:
 
 ```toml
 [project]

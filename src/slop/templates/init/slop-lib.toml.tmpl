@@ -1,0 +1,12 @@
+[project]
+name = "{{name}}"
+version = "0.1.0"
+
+[build]
+type = "static"
+sources = ["src/{{module}}.slop"]
+output = "build/lib{{module}}"
+include = ["src"]
+
+[test]
+sources = ["src"]

@@ -486,16 +486,22 @@ def _project_name_in(toml_path: Path) -> Optional[str]:
     name = project.get('name')
     if name is None or name == '':
         return None
-    if not isinstance(name, str) or not PACKAGE_NAME_RE.match(name):
-        raise PackageNameError(
-            f"{toml_path}: [project] name {name!r} cannot qualify the C names of the "
-            f"package's modules: use letters, digits, '_' and '-', starting with a "
-            f"letter or '_'")
-    if RESERVED_PACKAGE_RE.match(name):
-        raise PackageNameError(
-            f"{toml_path}: [project] name {name!r} would give the package's modules the C "
-            f"prefix slop_, which is the runtime's: a module list would be slop_list_")
+    problem = package_name_problem(name)
+    if problem:
+        raise PackageNameError(f"{toml_path}: {problem}")
     return name
+
+
+def package_name_problem(name) -> Optional[str]:
+    """Why name cannot be a [project] name, or None if it can."""
+    if not isinstance(name, str) or not PACKAGE_NAME_RE.match(name):
+        return (f"[project] name {name!r} cannot qualify the C names of the "
+                f"package's modules: use letters, digits, '_' and '-', starting with a "
+                f"letter or '_'")
+    if RESERVED_PACKAGE_RE.match(name):
+        return (f"[project] name {name!r} would give the package's modules the C "
+                f"prefix slop_, which is the runtime's: a module list would be slop_list_")
+    return None
 
 
 def package_name_for(path: Path) -> Optional[str]:

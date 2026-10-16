@@ -1,0 +1,11 @@
+# Build output
+build/
+*.o
+*.a
+
+# slop test cache
+.slop-test/
+
+# Personal agent settings
+CLAUDE.local.md
+.claude/settings.local.json

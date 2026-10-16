@@ -1251,6 +1251,7 @@ These ARE in strlib and need `(import strlib ...)`:
 | `slop ref [TOPIC] [--list]` | Show this language reference |
 | `slop paths [-v]` | Show SLOP_HOME, the native binaries and stdlib paths |
 | `slop mcp` | MCP server on stdio: ref, doc, check and format tools for coding agents |
+| `slop init [DIR] [--name N] [--lib] [--agents LIST]` | New project: slop.toml, src/, AGENTS.md, skills, MCP configs |
 
 ### Native Toolchain
 Parsing, checking and transpiling run on the native, self-hosted tools in

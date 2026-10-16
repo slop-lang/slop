@@ -1,0 +1,24 @@
+;; main.slop -- entry point for {{name}}
+(module main
+  (export main)
+
+  (type Percent (Int 0 .. 100))
+
+  (fn percent-of ((part (Int 0 ..)) (whole (Int 1 ..)))
+    (@intent "What percentage of whole part is, capped at 100")
+    (@spec (((Int 0 ..) (Int 1 ..)) -> Percent))
+    (@pure)
+    (@pre (> whole 0))
+    (@post (and (>= $result 0) (<= $result 100)))
+    (@example (0 10) -> 0)
+    (@example (5 10) -> 50)
+    (@example (1 3) -> 33)
+    (@example (20 10) -> 100)
+    (if (>= part whole) 100 (/ (* part 100) whole)))
+
+  (fn main ()
+    (@intent "Print how far 3 of 8 tasks is")
+    (@spec (() -> Int))
+    (@post (== $result 0))
+    (println (percent-of 3 8))
+    0))
