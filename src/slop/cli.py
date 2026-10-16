@@ -2781,6 +2781,12 @@ def cmd_build(args):
             link_libraries = []
             link_paths = []
 
+        # libm is part of libc on macOS but separate on Linux, where mathlib
+        # and any (ffi "math.h" ...) fail to link without it (#177). A copy,
+        # so build_cfg's list is left as configured.
+        if "m" not in link_libraries:
+            link_libraries = list(link_libraries) + ["m"]
+
         # Add standard library paths by default
         stdlib_paths = paths.get_stdlib_include_paths()
         for stdlib_path in stdlib_paths:

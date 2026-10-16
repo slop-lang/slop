@@ -185,6 +185,9 @@ libraries = ["pthread"]  # thread module on POSIX; left out of the link on Windo
 (import mathlib (PI sqrt sin cos pow clamp))
 ```
 
+mathlib calls C's `math.h`. `slop build` always links libm (`-lm`), which Linux
+keeps separate from libc, so no `[build.link]` entry is needed.
+
 ### Constants
 
 | Constant | Value | Description |
