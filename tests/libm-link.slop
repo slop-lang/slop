@@ -1,0 +1,16 @@
+;; libm-link.slop -- slop build links libm with no slop.toml (#177)
+;;
+;; The libm calls take argc, so the C compiler cannot fold them into
+;; constants: on Linux the program only links if slop build passes -lm.
+(module libm-link
+  (import mathlib (cbrt pow))
+  (export main)
+
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Exit 0 when cbrt and pow of a run-time value are right")
+    (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    (let ((cube (cbrt (cast Float (* argc 27))))
+          (square (pow (cast Float (+ argc 2)) 2.0)))
+      (if (and (> cube 2.999) (< cube 3.001) (> square 8.999) (< square 9.001))
+        0
+        1))))
