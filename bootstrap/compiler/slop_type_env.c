@@ -239,11 +239,11 @@ void type_env_env_bind_var_as(type_env_TypeEnv* env, slop_string name, types_Res
         __auto_type arena = (*env).arena;
         __auto_type scopes = (*env).scopes;
         __auto_type top_idx = (((int64_t)((scopes).len)) - 1);
-        __auto_type _mv_922 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)top_idx; slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-        if (_mv_922.has_value) {
-            __auto_type scope_ptr = _mv_922.value;
+        __auto_type _mv_930 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)top_idx; slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+        if (_mv_930.has_value) {
+            __auto_type scope_ptr = _mv_930.value;
             ({ __auto_type _lst_p = &((*scope_ptr).bindings); __auto_type _item = ((type_env_VarBinding){name, var_type, mutable, origin}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        } else if (!_mv_922.has_value) {
+        } else if (!_mv_930.has_value) {
         }
     }
 }
@@ -255,13 +255,13 @@ slop_option_type_env_VarBinding type_env_scope_lookup_binding(type_env_CheckerSc
         __auto_type num_bindings = ((int64_t)((bindings).len));
         slop_option_type_env_VarBinding result = (slop_option_type_env_VarBinding){.has_value = false};
         for (int64_t j = 0; j < num_bindings; j++) {
-            __auto_type _mv_923 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_type_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_923.has_value) {
-                __auto_type binding = _mv_923.value;
+            __auto_type _mv_931 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_type_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_931.has_value) {
+                __auto_type binding = _mv_931.value;
                 if (({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); }) && string_eq(binding.name, name)) {
                     result = (slop_option_type_env_VarBinding){.has_value = 1, .value = binding};
                 }
-            } else if (!_mv_923.has_value) {
+            } else if (!_mv_931.has_value) {
             }
         }
         return result;
@@ -276,11 +276,11 @@ slop_option_type_env_VarBinding type_env_env_lookup_binding(type_env_TypeEnv* en
         slop_option_type_env_VarBinding result = (slop_option_type_env_VarBinding){.has_value = false};
         for (int64_t i = 0; i < num_scopes; i++) {
             if (({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
-                __auto_type _mv_924 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)((num_scopes) - (1) - (i)); slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                if (_mv_924.has_value) {
-                    __auto_type scope_ptr = _mv_924.value;
+                __auto_type _mv_932 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)((num_scopes) - (1) - (i)); slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_932.has_value) {
+                    __auto_type scope_ptr = _mv_932.value;
                     result = type_env_scope_lookup_binding(scope_ptr, name);
-                } else if (!_mv_924.has_value) {
+                } else if (!_mv_932.has_value) {
                 }
             }
         }
@@ -296,14 +296,14 @@ slop_option_types_ResolvedType_ptr type_env_scope_lookup_var(type_env_CheckerSco
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t j = 0; j < num_bindings; j++) {
-            __auto_type _mv_925 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_type_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_925.has_value) {
-                __auto_type binding = _mv_925.value;
+            __auto_type _mv_933 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_type_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_933.has_value) {
+                __auto_type binding = _mv_933.value;
                 if (!(found) && string_eq(binding.name, name)) {
                     found = 1;
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = binding.var_type};
                 }
-            } else if (!_mv_925.has_value) {
+            } else if (!_mv_933.has_value) {
             }
         }
         return result;
@@ -321,17 +321,17 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_var(type_env_TypeEnv* env
             if (!(found)) {
                 {
                     __auto_type scope_idx = ((num_scopes) - (1) - (i));
-                    __auto_type _mv_926 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)scope_idx; slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_926.has_value) {
-                        __auto_type scope_ptr = _mv_926.value;
-                        __auto_type _mv_927 = type_env_scope_lookup_var(scope_ptr, name);
-                        if (_mv_927.has_value) {
-                            __auto_type var_type = _mv_927.value;
+                    __auto_type _mv_934 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)scope_idx; slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_934.has_value) {
+                        __auto_type scope_ptr = _mv_934.value;
+                        __auto_type _mv_935 = type_env_scope_lookup_var(scope_ptr, name);
+                        if (_mv_935.has_value) {
+                            __auto_type var_type = _mv_935.value;
                             found = 1;
                             result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = var_type};
-                        } else if (!_mv_927.has_value) {
+                        } else if (!_mv_935.has_value) {
                         }
-                    } else if (!_mv_926.has_value) {
+                    } else if (!_mv_934.has_value) {
                     }
                 }
             }
@@ -347,22 +347,22 @@ void type_env_env_register_constant(type_env_TypeEnv* env, slop_string name, typ
 }
 
 uint8_t type_env_env_constant_matches_module(type_env_ConstBinding binding, slop_string mod_name) {
-    __auto_type _mv_928 = binding.module_name;
-    if (_mv_928.has_value) {
-        __auto_type bmod = _mv_928.value;
+    __auto_type _mv_936 = binding.module_name;
+    if (_mv_936.has_value) {
+        __auto_type bmod = _mv_936.value;
         return string_eq(bmod, mod_name);
-    } else if (!_mv_928.has_value) {
+    } else if (!_mv_936.has_value) {
         return 0;
     }
     SLOP_UNREACHABLE();
 }
 
 uint8_t type_env_env_constant_is_builtin(type_env_ConstBinding binding) {
-    __auto_type _mv_929 = binding.module_name;
-    if (!_mv_929.has_value) {
+    __auto_type _mv_937 = binding.module_name;
+    if (!_mv_937.has_value) {
         return 1;
-    } else if (_mv_929.has_value) {
-        __auto_type _ = _mv_929.value;
+    } else if (_mv_937.has_value) {
+        __auto_type _ = _mv_937.value;
         return 0;
     }
     SLOP_UNREACHABLE();
@@ -376,13 +376,13 @@ uint8_t type_env_env_lookup_constant_in_module(type_env_TypeEnv* env, slop_strin
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if (!(found)) {
-                __auto_type _mv_930 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                if (_mv_930.has_value) {
-                    __auto_type binding = _mv_930.value;
+                __auto_type _mv_938 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_938.has_value) {
+                    __auto_type binding = _mv_938.value;
                     if (string_eq(binding.name, const_name) && type_env_env_constant_matches_module(binding, mod_name)) {
                         found = 1;
                     }
-                } else if (!_mv_930.has_value) {
+                } else if (!_mv_938.has_value) {
                 }
             }
         }
@@ -398,28 +398,28 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_constant(type_env_TypeEnv
         __auto_type current_mod = type_env_env_get_module(env);
         uint8_t found = 0;
         types_ResolvedType* found_type = NULL;
-        __auto_type _mv_931 = current_mod;
-        if (_mv_931.has_value) {
-            __auto_type mod = _mv_931.value;
+        __auto_type _mv_939 = current_mod;
+        if (_mv_939.has_value) {
+            __auto_type mod = _mv_939.value;
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_932 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_932.has_value) {
-                        __auto_type binding = _mv_932.value;
+                    __auto_type _mv_940 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_940.has_value) {
+                        __auto_type binding = _mv_940.value;
                         if (string_eq(binding.name, name) && type_env_env_constant_matches_module(binding, mod)) {
                             found = 1;
                             found_type = binding.const_type;
                         }
-                    } else if (!_mv_932.has_value) {
+                    } else if (!_mv_940.has_value) {
                     }
                 }
             }
-        } else if (!_mv_931.has_value) {
+        } else if (!_mv_939.has_value) {
         }
         if (!(found)) {
-            __auto_type _mv_933 = type_env_env_resolve_import(env, name);
-            if (_mv_933.has_value) {
-                __auto_type qualified_name = _mv_933.value;
+            __auto_type _mv_941 = type_env_env_resolve_import(env, name);
+            if (_mv_941.has_value) {
+                __auto_type qualified_name = _mv_941.value;
                 {
                     __auto_type colon_pos = type_env_find_colon_pos(qualified_name);
                     if (colon_pos != -1) {
@@ -427,34 +427,34 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_constant(type_env_TypeEnv
                             __auto_type mod_part = (slop_string){.len = ((uint64_t)(colon_pos)), .data = qualified_name.data};
                             for (int64_t i = 0; i < len; i++) {
                                 if (!(found)) {
-                                    __auto_type _mv_934 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                                    if (_mv_934.has_value) {
-                                        __auto_type binding = _mv_934.value;
+                                    __auto_type _mv_942 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                    if (_mv_942.has_value) {
+                                        __auto_type binding = _mv_942.value;
                                         if (string_eq(binding.name, name) && type_env_env_constant_matches_module(binding, mod_part)) {
                                             found = 1;
                                             found_type = binding.const_type;
                                         }
-                                    } else if (!_mv_934.has_value) {
+                                    } else if (!_mv_942.has_value) {
                                     }
                                 }
                             }
                         }
                     }
                 }
-            } else if (!_mv_933.has_value) {
+            } else if (!_mv_941.has_value) {
             }
         }
         if (!(found)) {
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_935 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_935.has_value) {
-                        __auto_type binding = _mv_935.value;
+                    __auto_type _mv_943 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_943.has_value) {
+                        __auto_type binding = _mv_943.value;
                         if (string_eq(binding.name, name) && type_env_env_constant_is_builtin(binding)) {
                             found = 1;
                             found_type = binding.const_type;
                         }
-                    } else if (!_mv_935.has_value) {
+                    } else if (!_mv_943.has_value) {
                     }
                 }
             }
@@ -481,14 +481,14 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_type_direct(type_env_Type
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_936 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_936.has_value) {
-                __auto_type t = _mv_936.value;
+            __auto_type _mv_944 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_944.has_value) {
+                __auto_type t = _mv_944.value;
                 if (!(found) && string_eq((*t).name, name)) {
                     found = 1;
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
                 }
-            } else if (!_mv_936.has_value) {
+            } else if (!_mv_944.has_value) {
             }
         }
         return result;
@@ -531,16 +531,16 @@ slop_option_types_ResolvedType_ptr type_env_lookup_type_by_qualified_name(type_e
 
 slop_option_types_ResolvedType_ptr type_env_env_lookup_type(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    __auto_type _mv_937 = type_env_env_lookup_own_type(env, name);
-    if (_mv_937.has_value) {
-        __auto_type t = _mv_937.value;
+    __auto_type _mv_945 = type_env_env_lookup_own_type(env, name);
+    if (_mv_945.has_value) {
+        __auto_type t = _mv_945.value;
         return (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
-    } else if (!_mv_937.has_value) {
-        __auto_type _mv_938 = type_env_env_resolve_import(env, name);
-        if (_mv_938.has_value) {
-            __auto_type qualified_name = _mv_938.value;
+    } else if (!_mv_945.has_value) {
+        __auto_type _mv_946 = type_env_env_resolve_import(env, name);
+        if (_mv_946.has_value) {
+            __auto_type qualified_name = _mv_946.value;
             return type_env_lookup_type_by_qualified_name(env, qualified_name);
-        } else if (!_mv_938.has_value) {
+        } else if (!_mv_946.has_value) {
             return type_env_env_lookup_type_builtin(env, name);
         }
         SLOP_UNREACHABLE();
@@ -555,18 +555,18 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_type_qualified(type_env_T
         int64_t i = (((int64_t)(((int64_t)((types).len)))) - 1);
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while ((i >= 0) && ({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
-            __auto_type _mv_939 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at type_env.slop:630:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_939.has_value) {
-                __auto_type t = _mv_939.value;
-                __auto_type _mv_940 = (*t).module_name;
-                if (_mv_940.has_value) {
-                    __auto_type mod = _mv_940.value;
+            __auto_type _mv_947 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at type_env.slop:630:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_947.has_value) {
+                __auto_type t = _mv_947.value;
+                __auto_type _mv_948 = (*t).module_name;
+                if (_mv_948.has_value) {
+                    __auto_type mod = _mv_948.value;
                     if (string_eq(mod, module_name) && string_eq((*t).name, type_name)) {
                         result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
                     }
-                } else if (!_mv_940.has_value) {
+                } else if (!_mv_948.has_value) {
                 }
-            } else if (!_mv_939.has_value) {
+            } else if (!_mv_947.has_value) {
             }
             i = (i - 1);
         }
@@ -582,13 +582,13 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_own_type(type_env_TypeEnv
         int64_t i = (((int64_t)(((int64_t)((types).len)))) - 1);
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while ((i >= 0) && ({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
-            __auto_type _mv_941 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at type_env.slop:653:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_941.has_value) {
-                __auto_type t = _mv_941.value;
+            __auto_type _mv_949 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at type_env.slop:653:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_949.has_value) {
+                __auto_type t = _mv_949.value;
                 if (string_eq((*t).name, name) && type_env_env_same_module_opt((*t).module_name, current)) {
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
                 }
-            } else if (!_mv_941.has_value) {
+            } else if (!_mv_949.has_value) {
             }
             i = (i - 1);
         }
@@ -603,13 +603,13 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_type_builtin(type_env_Typ
         __auto_type len = ((int64_t)((types).len));
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_942 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_942.has_value) {
-                __auto_type t = _mv_942.value;
+            __auto_type _mv_950 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_950.has_value) {
+                __auto_type t = _mv_950.value;
                 if ((({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (string_eq((*t).name, name)) && (({ __auto_type _mv = (*t).module_name; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); }))) {
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
                 }
-            } else if (!_mv_942.has_value) {
+            } else if (!_mv_950.has_value) {
             }
         }
         return result;
@@ -623,13 +623,13 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_type_elsewhere(type_env_T
         __auto_type len = ((int64_t)((types).len));
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_943 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_943.has_value) {
-                __auto_type t = _mv_943.value;
+            __auto_type _mv_951 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_951.has_value) {
+                __auto_type t = _mv_951.value;
                 if ((({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (string_eq((*t).name, name)) && (({ __auto_type _mv = (*t).module_name; _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); }))) {
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
                 }
-            } else if (!_mv_943.has_value) {
+            } else if (!_mv_951.has_value) {
             }
         }
         return result;
@@ -639,16 +639,16 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_type_elsewhere(type_env_T
 uint8_t type_env_env_is_function_visible(type_env_TypeEnv* env, types_FnSignature* sig) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((sig != NULL)), "(!= sig nil)");
-    __auto_type _mv_944 = (*sig).module_name;
-    if (!_mv_944.has_value) {
+    __auto_type _mv_952 = (*sig).module_name;
+    if (!_mv_952.has_value) {
         return 1;
-    } else if (_mv_944.has_value) {
-        __auto_type mod = _mv_944.value;
-        __auto_type _mv_945 = type_env_env_get_module(env);
-        if (_mv_945.has_value) {
-            __auto_type current = _mv_945.value;
+    } else if (_mv_952.has_value) {
+        __auto_type mod = _mv_952.value;
+        __auto_type _mv_953 = type_env_env_get_module(env);
+        if (_mv_953.has_value) {
+            __auto_type current = _mv_953.value;
             return string_eq(mod, current);
-        } else if (!_mv_945.has_value) {
+        } else if (!_mv_953.has_value) {
             return 0;
         }
         SLOP_UNREACHABLE();
@@ -670,14 +670,14 @@ slop_option_types_FnSignature_ptr type_env_env_lookup_function_direct(type_env_T
         uint8_t found = 0;
         slop_option_types_FnSignature_ptr result = (slop_option_types_FnSignature_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_946 = ({ __auto_type _lst = functions; size_t _idx = (size_t)i; slop_option_types_FnSignature_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_946.has_value) {
-                __auto_type sig = _mv_946.value;
+            __auto_type _mv_954 = ({ __auto_type _lst = functions; size_t _idx = (size_t)i; slop_option_types_FnSignature_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_954.has_value) {
+                __auto_type sig = _mv_954.value;
                 if (!(found) && (string_eq((*sig).name, name) || string_eq((*sig).c_name, name))) {
                     found = 1;
                     result = (slop_option_types_FnSignature_ptr){.has_value = 1, .value = sig};
                 }
-            } else if (!_mv_946.has_value) {
+            } else if (!_mv_954.has_value) {
             }
         }
         return result;
@@ -689,25 +689,25 @@ slop_option_types_FnSignature_ptr type_env_env_lookup_function(type_env_TypeEnv*
     {
         __auto_type arena = type_env_env_arena(env);
         __auto_type own = ({ __auto_type _mv = type_env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; type_env_env_lookup_function_direct(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = mod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
-        __auto_type _mv_947 = own;
-        if (_mv_947.has_value) {
-            __auto_type _ = _mv_947.value;
+        __auto_type _mv_955 = own;
+        if (_mv_955.has_value) {
+            __auto_type _ = _mv_955.value;
             return own;
-        } else if (!_mv_947.has_value) {
-            __auto_type _mv_948 = type_env_env_resolve_import(env, name);
-            if (_mv_948.has_value) {
-                __auto_type import_qualified = _mv_948.value;
+        } else if (!_mv_955.has_value) {
+            __auto_type _mv_956 = type_env_env_resolve_import(env, name);
+            if (_mv_956.has_value) {
+                __auto_type import_qualified = _mv_956.value;
                 return type_env_env_lookup_function_direct(env, import_qualified);
-            } else if (!_mv_948.has_value) {
-                __auto_type _mv_949 = type_env_env_lookup_function_direct(env, name);
-                if (_mv_949.has_value) {
-                    __auto_type sig = _mv_949.value;
+            } else if (!_mv_956.has_value) {
+                __auto_type _mv_957 = type_env_env_lookup_function_direct(env, name);
+                if (_mv_957.has_value) {
+                    __auto_type sig = _mv_957.value;
                     if (type_env_env_is_function_visible(env, sig)) {
                         return (slop_option_types_FnSignature_ptr){.has_value = 1, .value = sig};
                     } else {
                         return (slop_option_types_FnSignature_ptr){.has_value = false};
                     }
-                } else if (!_mv_949.has_value) {
+                } else if (!_mv_957.has_value) {
                     return (slop_option_types_FnSignature_ptr){.has_value = false};
                 }
                 SLOP_UNREACHABLE();
@@ -721,11 +721,11 @@ slop_option_types_FnSignature_ptr type_env_env_lookup_function(type_env_TypeEnv*
 void type_env_env_add_import(type_env_TypeEnv* env, slop_string local_name, slop_string qualified_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     (void)(({ __auto_type _lst_p = &((*env).imports); __auto_type _item = ((type_env_ImportEntry){local_name, qualified_name}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; }));
-    __auto_type _mv_950 = type_env_env_get_module(env);
-    if (_mv_950.has_value) {
-        __auto_type mod = _mv_950.value;
+    __auto_type _mv_958 = type_env_env_get_module(env);
+    if (_mv_958.has_value) {
+        __auto_type mod = _mv_958.value;
         ({ __auto_type _lst_p = &((*env).module_imports); __auto_type _item = ((type_env_ModuleImport){mod, local_name, qualified_name}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-    } else if (!_mv_950.has_value) {
+    } else if (!_mv_958.has_value) {
     }
 }
 
@@ -737,14 +737,14 @@ slop_option_string type_env_env_resolve_import(type_env_TypeEnv* env, slop_strin
         uint8_t found = 0;
         slop_option_string result = (slop_option_string){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_951 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_type_env_ImportEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_951.has_value) {
-                __auto_type entry = _mv_951.value;
+            __auto_type _mv_959 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_type_env_ImportEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_959.has_value) {
+                __auto_type entry = _mv_959.value;
                 if (!(found) && string_eq(entry.local, local_name)) {
                     found = 1;
                     result = (slop_option_string){.has_value = 1, .value = entry.qualified};
                 }
-            } else if (!_mv_951.has_value) {
+            } else if (!_mv_959.has_value) {
             }
         }
         return result;
@@ -758,13 +758,13 @@ slop_option_string type_env_env_lookup_module_import(type_env_TypeEnv* env, slop
         __auto_type len = ((int64_t)((imports).len));
         slop_option_string result = (slop_option_string){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_952 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_type_env_ModuleImport _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_952.has_value) {
-                __auto_type entry = _mv_952.value;
+            __auto_type _mv_960 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_type_env_ModuleImport _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_960.has_value) {
+                __auto_type entry = _mv_960.value;
                 if ((({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (string_eq(entry.module, mod_name)) && (string_eq(entry.local, local_name))) {
                     result = (slop_option_string){.has_value = 1, .value = entry.qualified};
                 }
-            } else if (!_mv_952.has_value) {
+            } else if (!_mv_960.has_value) {
             }
         }
         return result;
@@ -789,11 +789,11 @@ uint8_t type_env_env_imports_variant_type(type_env_TypeEnv* env, type_env_Varian
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = type_env_env_arena(env);
-        __auto_type _mv_953 = type_env_env_resolve_import(env, v.enum_name);
-        if (_mv_953.has_value) {
-            __auto_type qualified = _mv_953.value;
+        __auto_type _mv_961 = type_env_env_resolve_import(env, v.enum_name);
+        if (_mv_961.has_value) {
+            __auto_type qualified = _mv_961.value;
             return string_eq(qualified, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = vmod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = v.enum_name; _ll; })));
-        } else if (!_mv_953.has_value) {
+        } else if (!_mv_961.has_value) {
             return 0;
         }
         SLOP_UNREACHABLE();
@@ -814,26 +814,26 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_variant(type_env_TypeEnv*
         uint8_t reported = 0;
         slop_option_types_ResolvedType_ptr builtin = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_954 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_954.has_value) {
-                __auto_type v = _mv_954.value;
+            __auto_type _mv_962 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_962.has_value) {
+                __auto_type v = _mv_962.value;
                 if (string_eq(v.variant_name, variant_name)) {
-                    __auto_type _mv_955 = v.module_name;
-                    if (_mv_955.has_value) {
-                        __auto_type vmod = _mv_955.value;
+                    __auto_type _mv_963 = v.module_name;
+                    if (_mv_963.has_value) {
+                        __auto_type vmod = _mv_963.value;
                         if (type_env_env_same_module_opt(v.module_name, current)) {
                             if (({ __auto_type _mv = own; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
                                 own = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = v.enum_type};
                             }
                         } else {
                             if (type_env_env_imports_variant_type(env, v, vmod)) {
-                                __auto_type _mv_956 = imported;
-                                if (!_mv_956.has_value) {
+                                __auto_type _mv_964 = imported;
+                                if (!_mv_964.has_value) {
                                     imported = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = v.enum_type};
                                     imported_mod = vmod;
                                     imported_type = v.enum_name;
-                                } else if (_mv_956.has_value) {
-                                    __auto_type _ = _mv_956.value;
+                                } else if (_mv_964.has_value) {
+                                    __auto_type _ = _mv_964.value;
                                     if (!(reported) && (!(string_eq(imported_mod, vmod)) || !(string_eq(imported_type, v.enum_name)))) {
                                         reported = 1;
                                         type_env_env_add_error(env, std_strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 11 * sizeof(slop_string)), .len = 11, .cap = 11, .arena = arena }; _ll.data[0] = SLOP_STR("variant '"); _ll.data[1] = variant_name; _ll.data[2] = SLOP_STR("' is ambiguous: imported from both '"); _ll.data[3] = imported_mod; _ll.data[4] = SLOP_STR("' ("); _ll.data[5] = imported_type; _ll.data[6] = SLOP_STR(") and '"); _ll.data[7] = vmod; _ll.data[8] = SLOP_STR("' ("); _ll.data[9] = v.enum_name; _ll.data[10] = SLOP_STR(")"); _ll; })), line, col);
@@ -841,25 +841,25 @@ slop_option_types_ResolvedType_ptr type_env_env_lookup_variant(type_env_TypeEnv*
                                 }
                             }
                         }
-                    } else if (!_mv_955.has_value) {
+                    } else if (!_mv_963.has_value) {
                         if (({ __auto_type _mv = builtin; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
                             builtin = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = v.enum_type};
                         }
                     }
                 }
-            } else if (!_mv_954.has_value) {
+            } else if (!_mv_962.has_value) {
             }
         }
-        __auto_type _mv_957 = own;
-        if (_mv_957.has_value) {
-            __auto_type _ = _mv_957.value;
+        __auto_type _mv_965 = own;
+        if (_mv_965.has_value) {
+            __auto_type _ = _mv_965.value;
             return own;
-        } else if (!_mv_957.has_value) {
-            __auto_type _mv_958 = imported;
-            if (_mv_958.has_value) {
-                __auto_type _ = _mv_958.value;
+        } else if (!_mv_965.has_value) {
+            __auto_type _mv_966 = imported;
+            if (_mv_966.has_value) {
+                __auto_type _ = _mv_966.value;
                 return imported;
-            } else if (!_mv_958.has_value) {
+            } else if (!_mv_966.has_value) {
                 return builtin;
             }
             SLOP_UNREACHABLE();
@@ -876,22 +876,22 @@ void type_env_env_check_variant_collisions(type_env_TypeEnv* env) {
         __auto_type current = type_env_env_get_module(env);
         __auto_type arena = (*env).arena;
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_959 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_959.has_value) {
-                __auto_type v1 = _mv_959.value;
+            __auto_type _mv_967 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_967.has_value) {
+                __auto_type v1 = _mv_967.value;
                 if (type_env_env_same_module_opt(v1.module_name, current)) {
                     {
                         uint8_t found_collision = 0;
                         slop_string collision_enum = SLOP_STR("");
                         for (int64_t j = (i + 1); j < len; j++) {
-                            __auto_type _mv_960 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                            if (_mv_960.has_value) {
-                                __auto_type v2 = _mv_960.value;
+                            __auto_type _mv_968 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            if (_mv_968.has_value) {
+                                __auto_type v2 = _mv_968.value;
                                 if ((!(found_collision)) && (string_eq(v2.variant_name, v1.variant_name)) && (!(string_eq(v2.enum_name, v1.enum_name))) && (type_env_env_same_module_opt(v2.module_name, current))) {
                                     found_collision = 1;
                                     collision_enum = v2.enum_name;
                                 }
-                            } else if (!_mv_960.has_value) {
+                            } else if (!_mv_968.has_value) {
                             }
                         }
                         if (found_collision) {
@@ -899,30 +899,30 @@ void type_env_env_check_variant_collisions(type_env_TypeEnv* env) {
                         }
                     }
                 }
-            } else if (!_mv_959.has_value) {
+            } else if (!_mv_967.has_value) {
             }
         }
     }
 }
 
 uint8_t type_env_env_same_module_opt(slop_option_string a, slop_option_string b) {
-    __auto_type _mv_961 = a;
-    if (!_mv_961.has_value) {
-        __auto_type _mv_962 = b;
-        if (!_mv_962.has_value) {
+    __auto_type _mv_969 = a;
+    if (!_mv_969.has_value) {
+        __auto_type _mv_970 = b;
+        if (!_mv_970.has_value) {
             return 1;
-        } else if (_mv_962.has_value) {
-            __auto_type _ = _mv_962.value;
+        } else if (_mv_970.has_value) {
+            __auto_type _ = _mv_970.value;
             return 0;
         }
         SLOP_UNREACHABLE();
-    } else if (_mv_961.has_value) {
-        __auto_type amod = _mv_961.value;
-        __auto_type _mv_963 = b;
-        if (!_mv_963.has_value) {
+    } else if (_mv_969.has_value) {
+        __auto_type amod = _mv_969.value;
+        __auto_type _mv_971 = b;
+        if (!_mv_971.has_value) {
             return 0;
-        } else if (_mv_963.has_value) {
-            __auto_type bmod = _mv_963.value;
+        } else if (_mv_971.has_value) {
+            __auto_type bmod = _mv_971.value;
             return string_eq(amod, bmod);
         }
         SLOP_UNREACHABLE();
@@ -1138,12 +1138,12 @@ void type_env_env_check_range_narrowing(type_env_TypeEnv* env, slop_string conte
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((target != NULL)), "(!= target nil)");
     SLOP_PRE(((value != NULL)), "(!= value nil)");
-    __auto_type _mv_964 = type_env_env_type_range(target);
-    if (_mv_964.has_value) {
-        __auto_type target_range = _mv_964.value;
-        __auto_type _mv_965 = type_env_env_type_range(value);
-        if (_mv_965.has_value) {
-            __auto_type value_range = _mv_965.value;
+    __auto_type _mv_972 = type_env_env_type_range(target);
+    if (_mv_972.has_value) {
+        __auto_type target_range = _mv_972.value;
+        __auto_type _mv_973 = type_env_env_type_range(value);
+        if (_mv_973.has_value) {
+            __auto_type value_range = _mv_973.value;
             {
                 __auto_type arena = type_env_env_arena(env);
                 if (types_range_is_constant(value_range)) {
@@ -1155,9 +1155,9 @@ void type_env_env_check_range_narrowing(type_env_TypeEnv* env, slop_string conte
                 } else {
                 }
             }
-        } else if (!_mv_965.has_value) {
+        } else if (!_mv_973.has_value) {
         }
-    } else if (!_mv_964.has_value) {
+    } else if (!_mv_972.has_value) {
     }
 }
 
@@ -1216,13 +1216,13 @@ uint8_t type_env_env_is_module_loaded(type_env_TypeEnv* env, slop_string module_
         __auto_type len = ((int64_t)((modules).len));
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_966 = ({ __auto_type _lst = modules; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_966.has_value) {
-                __auto_type path = _mv_966.value;
+            __auto_type _mv_974 = ({ __auto_type _lst = modules; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_974.has_value) {
+                __auto_type path = _mv_974.value;
                 if (!(found) && string_eq(path, module_path)) {
                     found = 1;
                 }
-            } else if (!_mv_966.has_value) {
+            } else if (!_mv_974.has_value) {
             }
         }
         return found;
@@ -1252,13 +1252,13 @@ uint8_t type_env_env_is_type_param(type_env_TypeEnv* env, slop_string name) {
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if (!(found)) {
-                __auto_type _mv_967 = ({ __auto_type _lst = params; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                if (_mv_967.has_value) {
-                    __auto_type p = _mv_967.value;
+                __auto_type _mv_975 = ({ __auto_type _lst = params; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_975.has_value) {
+                    __auto_type p = _mv_975.value;
                     if (string_eq(p, name)) {
                         found = 1;
                     }
-                } else if (!_mv_967.has_value) {
+                } else if (!_mv_975.has_value) {
                 }
             }
         }
