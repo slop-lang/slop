@@ -1,0 +1,17 @@
+;; {{module}}.slop -- the {{name}} library
+(module {{module}}
+  (export percent-of)
+
+  (type Percent (Int 0 .. 100))
+
+  (fn percent-of ((part (Int 0 ..)) (whole (Int 1 ..)))
+    (@intent "What percentage of whole part is, capped at 100")
+    (@spec (((Int 0 ..) (Int 1 ..)) -> Percent))
+    (@pure)
+    (@pre (> whole 0))
+    (@post (and (>= $result 0) (<= $result 100)))
+    (@example (0 10) -> 0)
+    (@example (5 10) -> 50)
+    (@example (1 3) -> 33)
+    (@example (20 10) -> 100)
+    (if (>= part whole) 100 (/ (* part 100) whole))))

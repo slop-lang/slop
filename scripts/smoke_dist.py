@@ -4,8 +4,9 @@
     python scripts/smoke_dist.py <slop command> <a .slop file that checks clean>
 
 Runs the `slop` command (bin/slop, or bin\\slop.cmd on Windows) the way a user
-or a coding agent would: --version, `slop check` on the file, and an MCP
-session with `slop mcp` (initialize, tools/list, then ref, doc and check).
+or a coding agent would: --version, `slop check` on the file, an MCP
+session with `slop mcp` (initialize, tools/list, then ref, doc and check),
+and a project from `slop init` built, run and tested.
 SLOP_HOME is removed from the environment, so the command has to find the
 native tools and the standard library of its own distribution.
 
@@ -16,6 +17,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import NoReturn
 
 ENV = {k: v for k, v in os.environ.items() if k != "SLOP_HOME"}
@@ -30,9 +33,38 @@ def fail(what, result=None) -> NoReturn:
     sys.exit(1)
 
 
-def run(cmd, stdin=None):
+def run(cmd, stdin=None, cwd=None):
     return subprocess.run(cmd, input=stdin, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", env=ENV, timeout=300)
+                          encoding="utf-8", errors="replace", env=ENV, timeout=300,
+                          cwd=cwd)
+
+
+def smoke_init(slop):
+    """slop init a project, then build, run and test it from its directory."""
+    with tempfile.TemporaryDirectory() as tmp:
+        project = Path(tmp) / "demo"
+        result = run([slop, "init", str(project)])
+        if result.returncode != 0:
+            fail(f"{slop} init {project}", result)
+        for rel in ("slop.toml", "src/main.slop", "AGENTS.md", "CLAUDE.md", ".mcp.json",
+                    ".claude/skills/slop-review/SKILL.md", ".codex/config.toml"):
+            if not (project / rel).is_file():
+                fail(f"slop init did not write {rel}", result)
+        server = json.loads((project / ".mcp.json").read_text())["mcpServers"]["slop"]
+        expected = ["cmd", "/c", "slop", "mcp"] if os.name == "nt" else ["slop", "mcp"]
+        if [server["command"], *server["args"]] != expected:
+            fail(f"slop init: .mcp.json starts the server with {server}", result)
+        print("ok: slop init")
+
+        for args in (["check", "src/main.slop"], ["test"], ["build"]):
+            result = run([slop, *args], cwd=project)
+            if result.returncode != 0:
+                fail(f"{slop} {' '.join(args)} in a new project", result)
+        exe = project / "build" / ("demo.exe" if os.name == "nt" else "demo")
+        result = run([str(exe)])
+        if result.returncode != 0 or result.stdout.strip() != "37":
+            fail(f"the new project's {exe.name}", result)
+        print("ok: slop check, test, build and run in the new project")
 
 
 def request(id_, method, params):
@@ -46,7 +78,7 @@ def tool(id_, name, arguments):
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
-    slop, example = sys.argv[1], os.path.abspath(sys.argv[2])
+    slop, example = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
 
     result = run([slop, "--version"])
     if result.returncode != 0 or not result.stdout.startswith("slop "):
@@ -99,6 +131,8 @@ def main():
     if text_of(5, "check") != "OK: no errors or warnings":
         fail(f"slop mcp: check {example}: {text_of(5, 'check')}", result)
     print("ok: slop mcp (initialize, tools/list, ref, doc, check)")
+
+    smoke_init(slop)
 
 
 if __name__ == "__main__":

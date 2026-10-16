@@ -4832,6 +4832,31 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_init(args):
+    """Lay out a new SLOP project, with files that set coding agents up for it."""
+    from slop import scaffold
+    directory = Path(args.directory)
+    name = args.name or scaffold.default_name(directory)
+    if not name:
+        print("Error: cannot take a project name from the directory; pass --name", file=sys.stderr)
+        return 1
+    agents = None
+    if args.agents is not None:
+        agents = tuple(a.strip() for a in args.agents.split(',') if a.strip())
+    opts = scaffold.Options(directory=directory, name=name, lib=args.lib, agents=agents,
+                            no_agents=args.no_agents, agents_only=args.agents_only,
+                            force=args.force)
+    try:
+        scaffold.init_project(opts, lambda action, what: print(f"  {action:<8} {what}"))
+    except (scaffold.InitError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print("\nNext:")
+    for step in scaffold.next_steps(opts, Path.cwd()):
+        print(f"  {step}")
+    return 0
+
+
 def cmd_mcp(args):
     """Serve the ref, doc, check and format tools over MCP (stdio)."""
     from slop.mcp_server import main as mcp_main
@@ -5068,6 +5093,25 @@ def main():
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show additional details (examples list)')
 
+    # init - new project
+    p = subparsers.add_parser('init',
+        help='Create a new SLOP project, set up for coding agents')
+    p.add_argument('directory', nargs='?', default='.',
+        help='Project directory (default: current directory; created if missing)')
+    p.add_argument('--name', help='Project name (default: the directory name)')
+    p.add_argument('--lib', action='store_true',
+        help='A static library instead of an executable')
+    p.add_argument('--agents', metavar='LIST',
+        help='Comma-separated agents to register the slop MCP server for: '
+             'claude,codex,cursor,vscode (default: all of them, or in a project '
+             'that has an AGENTS.md, the ones already set up)')
+    p.add_argument('--no-agents', action='store_true',
+        help='Skip AGENTS.md, skills and MCP configs')
+    p.add_argument('--agents-only', action='store_true',
+        help='Only refresh the agent files (skills, MCP configs) in an existing project')
+    p.add_argument('--force', action='store_true',
+        help='Replace files that already exist')
+
     # mcp - tools for coding agents
     subparsers.add_parser('mcp',
         help='Run an MCP server on stdio with ref, doc, check and format tools for coding agents')
@@ -5092,6 +5136,7 @@ def main():
         'doc': cmd_doc,
         'test': cmd_test,
         'paths': cmd_paths,
+        'init': cmd_init,
         'mcp': cmd_mcp,
     }
 
