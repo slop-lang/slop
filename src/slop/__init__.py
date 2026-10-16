@@ -8,7 +8,7 @@ A language designed for hybrid human-machine code generation where:
 - Machines compile to efficient native code via C
 """
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 import sys
 

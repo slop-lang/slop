@@ -219,7 +219,7 @@ int main(int argc, char** _c_argv) {
     (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(std_strlib_cstring_to_string(argv[1]), SLOP_STR("--version"))) {
-            tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.5.1\n").data)));
+            tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.5.2\n").data)));
             return 0;
         }
     }
