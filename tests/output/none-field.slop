@@ -1,0 +1,15 @@
+;; A record field named none, which the runtime #defines (#352).
+;; Expected output: 7 / true
+(module none-field
+  (export main)
+
+  (type Qty (record (amount Int) (none Bool)))
+
+  (fn main ()
+    (@intent "Build, change and read a record with a field named none")
+    (@spec (() -> Int))
+    (let ((mut q (record-new Qty (amount 7) (none false))))
+      (set! q none true)
+      (println (. q amount))
+      (println (. q none))
+      0)))

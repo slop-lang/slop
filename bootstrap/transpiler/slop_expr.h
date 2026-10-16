@@ -145,6 +145,8 @@ slop_string expr_transpile_list_expr(context_TranspileContext* ctx, slop_list_ty
 slop_string expr_transpile_fn_call(context_TranspileContext* ctx, slop_string fn_name, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_print(context_TranspileContext* ctx, types_SExpr* arg, uint8_t newline);
 slop_string expr_transpile_print_string(context_TranspileContext* ctx, slop_string arg_c, slop_string nl);
+slop_string expr_checker_print_hint(types_SExpr* expr);
+slop_string expr_resolved_print_hint(types_ResolvedType* rt, int64_t depth);
 slop_string expr_transpile_printf_call(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_raw_string_fn_call(context_TranspileContext* ctx, slop_string fn_name, slop_list_types_SExpr_ptr items);
 uint8_t expr_string_contains(slop_string s, slop_string substr);

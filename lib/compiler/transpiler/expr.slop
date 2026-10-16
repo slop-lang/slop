@@ -37,7 +37,7 @@
     set-is-self-assign check-set-target-c)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
-                 ResolvedType resolved-type-is-pointer resolved-type-to-slop-string
+                 ResolvedType ResolvedTypeKind resolved-type-is-pointer resolved-type-to-slop-string
                  BindingOrigin MutationKind mutation-error-message
                  if-operand-count-message union-type-constructor-message comparison-operand-count-message
                  is-literal-name literal-name-message))
@@ -3918,37 +3918,64 @@
             (ctx-str5 ctx "printf(\"%lld" nl "\", (long long)(" (. n raw) "))")))
         ;; Other expression - check for known types
         (_
-          (let ((arg-c (transpile-expr ctx arg)))
-            ;; Try to infer type from variable lookup
-            (match (get-expr-type-hint ctx arg)
-              ((some type-hint)
-                (cond
-                  ((or (string-eq type-hint "String") (string-eq type-hint "slop_string"))
-                    ;; String: use %.*s format since not null-terminated
-                    ;; printf("%.*s\n", (int)(arg).len, (arg).data)
-                    (transpile-print-string ctx arg-c nl))
-                  ((or (string-eq type-hint "Bool") (string-eq type-hint "uint8_t"))
-                    (ctx-str5 ctx "printf(\"%s" nl "\", (" arg-c ") ? \"true\" : \"false\")"))
-                  ((or (string-eq type-hint "Float") (string-eq type-hint "double"))
-                    (ctx-str5 ctx "printf(\"%f" nl "\", " arg-c ")"))
-                  (else
-                    ;; Default to integer
-                    (ctx-str5 ctx "printf(\"%lld" nl "\", (long long)(" arg-c "))"))))
-              ;; No type hint - default to integer for now
-              ((none)
+          (let ((arg-c (transpile-expr ctx arg))
+                ;; The transpiler's own guess, else the type the checker gave
+                ;; the node: an if, cond or match has no guess, so one whose
+                ;; branches are strings printed with %lld (#376)
+                (type-hint (match (get-expr-type-hint ctx arg)
+                             ((some h) h)
+                             ((none) (checker-print-hint arg)))))
+            (cond
+              ((or (string-eq type-hint "String") (string-eq type-hint "slop_string"))
+                ;; String: use %.*s format since not null-terminated
+                (transpile-print-string ctx arg-c nl))
+              ((or (string-eq type-hint "Bool") (string-eq type-hint "uint8_t"))
+                (ctx-str5 ctx "printf(\"%s" nl "\", (" arg-c ") ? \"true\" : \"false\")"))
+              ((or (string-eq type-hint "Float") (string-eq type-hint "double"))
+                (ctx-str5 ctx "printf(\"%f" nl "\", " arg-c ")"))
+              (else
+                ;; Default to integer
                 (ctx-str5 ctx "printf(\"%lld" nl "\", (long long)(" arg-c "))"))))))))
 
   (fn transpile-print-string ((ctx (Ptr TranspileContext)) (arg-c String) (nl String))
-    (@intent "Generate printf for string type")
+    (@intent "Generate printf for string type, evaluating the string once")
     (@spec (((Ptr TranspileContext) String String) -> String))
-    (let ((arena (. (deref ctx) arena)))
-      ;; printf("%.*s\n", (int)(arg).len, (arg).data)
-      (string-concat arena
-        (string-concat arena
-          (string-concat arena "printf(\"%.*s" nl)
-          (string-concat arena "\", (int)(" arg-c))
-        (string-concat arena ").len, ("
-          (string-concat arena arg-c ").data)")))))
+    ;; A String is not NUL-terminated, so it prints with %.*s from its len
+    ;; and data. A temporary holds it: arg-c can be a call, or an if whose
+    ;; branches are calls (#376), and naming it twice ran it twice.
+    ;; ({ slop_string _ps = (arg); printf("%.*s\n", (int)_ps.len, _ps.data); })
+    (let ((tmp (ctx-gensym ctx "_ps")))
+      (ctx-str4 ctx
+        (ctx-str3 ctx "({ slop_string " tmp " = (")
+        arg-c
+        (ctx-str ctx "); printf(\"%.*s" nl)
+        (ctx-str5 ctx "\", (int)" tmp ".len, " tmp ".data); })"))))
+
+  (fn checker-print-hint ((expr (Ptr SExpr)))
+    (@intent "The print type hint from the type the checker gave expr, or \"\" for none")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pre (!= expr nil))
+    (match (get-node-resolved-type expr)
+      ((some rt) (resolved-print-hint rt 0))
+      ((none) "")))
+
+  (fn resolved-print-hint ((rt (Ptr ResolvedType)) (depth Int))
+    (@intent "slop_string, uint8_t or double for a String, Bool or Float checker type, following plain aliases; \"\" otherwise")
+    (@spec (((Ptr ResolvedType) Int) -> String))
+    (@pre (!= rt nil))
+    ;; A plain alias, (type Label String), is an rk-primitive named Label
+    ;; whose inner type is the one it names
+    (let ((name (. (deref rt) name)))
+      (cond
+        ((not (== (. (deref rt) kind) 'rk-primitive)) "")
+        ((string-eq name "String") "slop_string")
+        ((string-eq name "Bool") "uint8_t")
+        ((or (string-eq name "Float") (string-eq name "F64") (string-eq name "F32")) "double")
+        ((> depth 8) "")
+        (else
+          (match (. (deref rt) inner-type)
+            ((some inner) (resolved-print-hint inner (+ depth 1)))
+            ((none) ""))))))
 
   (fn transpile-printf-call ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile printf call with raw C strings for string literals")
