@@ -7,6 +7,8 @@ Commands that need the native toolchain run against this checkout's bin/
 """
 
 import json
+import os
+import subprocess
 import sys
 
 import pytest
@@ -396,3 +398,33 @@ class TestBuildLibrary:
         assert rc == 0, out + err
         assert (tmp_path / "app.a").exists()
         assert not (tmp_path / "app.a.a").exists()
+
+
+class TestVerifyWithoutZ3:
+    """Without z3, the verifier still imports and slop verify says how to get it (#386)."""
+
+    # sys.modules['z3'] = None makes every `import z3` raise ImportError,
+    # including z3_setup's fallback after it adds a system site-packages
+    BLOCK_Z3 = "import sys; sys.modules['z3'] = None; "
+
+    def _run(self, code):
+        return subprocess.run([sys.executable, "-c", self.BLOCK_Z3 + code],
+                              capture_output=True, text=True, cwd=REPO_ROOT,
+                              env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")})
+
+    def test_verifier_imports(self):
+        result = self._run("import slop.verifier as v; "
+                           "from slop.verifier import verify_file, run_native_checker_diagnostics; "
+                           "print(v.Z3_AVAILABLE)")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "False"
+
+    def test_verify_prints_install_hint(self):
+        example = REPO_ROOT / "examples" / "fibonacci.slop"
+        result = self._run("from slop import cli; "
+                           f"sys.argv = ['slop', 'verify', {str(example)!r}]; "
+                           "sys.exit(cli.main())")
+        assert result.returncode == 1
+        assert "needs the Z3 solver" in result.stderr
+        assert "-m pip install 'z3-solver>=4.12.0'" in result.stderr
+        assert "Traceback" not in result.stderr
