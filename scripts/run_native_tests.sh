@@ -124,6 +124,25 @@ run_negative_unit_tests() {
 
 run_negative_unit_tests "tests/example-harness-negative" "example-harness-negative"
 
+# Every stdlib module must pass slop check, which is what a user's import of it
+# (and the MCP check tool) runs. slop build and slop test don't stop at checker
+# errors in an imported module, so json.slop built a variant bare for a release
+# and failed every importer's slop check (#350).
+echo -n "Checking stdlib modules... "
+std_failures=""
+while IFS= read -r module; do
+    if ! uv run slop check "$module" > /dev/null 2>&1; then
+        std_failures="$std_failures ${module#$REPO_ROOT/}"
+    fi
+done < <(find "$REPO_ROOT/lib/std" -name '*.slop' -not -path '*/tests/*' | sort)
+if [ -z "$std_failures" ]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC} (slop check fails on:$std_failures)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 echo ""
 
 # ============================================================

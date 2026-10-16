@@ -299,7 +299,7 @@
         ;; a is a copy of the payload; grow a mut copy and write it back (#191)
         (let ((mut grown a))
           (list-push (. grown items) val)
-          (set! (deref arr) (jarr grown))))
+          (set! (deref arr) (JsonValue (jarr grown)))))
       (_ unit)))
 
   ;; ============================================================
