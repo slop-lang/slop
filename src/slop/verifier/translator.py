@@ -1934,35 +1934,36 @@ class Z3Translator:
         return None
 
     def _translate_arithmetic(self, expr: SList) -> Optional[z3.ArithRef]:
-        """Translate arithmetic expression"""
+        """Translate arithmetic expression.
+
+        Every operand counts, folded from the left as the transpiler emits
+        it: (- a b c) is a - b - c, (/ a b c) is a / b / c (#348).
+        """
         if len(expr) < 3:
             return None
 
         op = expr[0].name if isinstance(expr[0], Symbol) else None
-        left = self.translate_expr(expr[1])
-        right = self.translate_expr(expr[2])
-
-        if left is None or right is None:
+        if op not in ('+', '-', '*', '/', '%'):
             return None
 
-        if op == '+':
-            return left + right
-        if op == '-':
-            return left - right
-        if op == '*':
-            return left * right
-        if op == '/':
-            # Add constraint that divisor is non-zero
-            if isinstance(right, z3.ArithRef):
-                self.add_definedness_constraint(right != 0)
-            return left / right
-        if op == '%':
-            # Add constraint that divisor is non-zero
-            if isinstance(right, z3.ArithRef):
-                self.add_definedness_constraint(right != 0)
-            return left % right
+        operands = [self.translate_expr(e) for e in expr.items[1:]]
+        if any(o is None for o in operands):
+            return None
 
-        return None
+        result = operands[0]
+        for right in operands[1:]:
+            if op == '+':
+                result = result + right
+            elif op == '-':
+                result = result - right
+            elif op == '*':
+                result = result * right
+            else:
+                # Each divisor must be non-zero for the expression to be defined
+                if isinstance(right, z3.ArithRef):
+                    self.add_definedness_constraint(right != 0)
+                result = result / right if op == '/' else result % right
+        return result
 
     def _translate_boolean(self, expr: SList) -> Optional[z3.BoolRef]:
         """Translate boolean expression"""

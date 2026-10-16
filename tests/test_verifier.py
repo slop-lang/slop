@@ -14469,3 +14469,36 @@ class TestImportedMutWrites:
         assert self._sig('''(fn z ((mut n Int))
             (@spec ((Int) -> Int))
             (let ((g (fn () (set! n 1)))) n))''').mut_writes == {'n': None}
+
+
+class TestNaryArithmetic:
+    """Every operand of + - * / % counts, folded from the left like the C (#348).
+
+    Only the first two were translated, so (+ a b c) read as (+ a b) and a
+    contract that dropped c verified.
+    """
+
+    @staticmethod
+    def _status(op, post, pres=()):
+        from slop.verifier import verify_source
+        pre = ''.join(f' (@pre {p})' for p in pres)
+        src = (f'(module m (fn f ((a Int) (b Int) (c Int))'
+               f' (@spec ((Int Int Int) -> Int)){pre}'
+               f' (@post (== $result {post})) ({op} a b c)))')
+        return verify_source(src)[0].status
+
+    def test_a_dropped_operand_fails(self):
+        assert self._status('+', '(+ a b)') == 'failed'
+
+    def test_all_operands_verify(self):
+        assert self._status('+', '(+ a (+ b c))') == 'verified'
+        assert self._status('*', '(* (* a b) c)') == 'verified'
+
+    def test_minus_folds_left(self):
+        assert self._status('-', '(- (- a b) c)') == 'verified'
+        assert self._status('-', '(- a (- b c))') == 'failed'
+
+    def test_divide_and_modulo_fold_left(self):
+        nonzero = ('(!= b 0)', '(!= c 0)')
+        assert self._status('/', '(/ (/ a b) c)', nonzero) == 'verified'
+        assert self._status('%', '(% (% a b) c)', nonzero) == 'verified'
