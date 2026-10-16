@@ -4504,12 +4504,12 @@ def _run_verify_multi(args, verify_files: list, verify_cfg, search_paths: list =
     """
     try:
         from slop.verifier import verify_file, Z3_AVAILABLE
-    except ImportError:
-        print("Error: verifier module not found", file=sys.stderr)
+    except ImportError as e:
+        print(f"Error: cannot load the verifier: {e}", file=sys.stderr)
         return 1
 
     if not Z3_AVAILABLE:
-        print("Error: Z3 solver not available.", file=sys.stderr)
+        _print_z3_unavailable()
         return 1
 
     if search_paths is None:
@@ -4613,21 +4613,28 @@ def _run_verify_multi(args, verify_files: list, verify_cfg, search_paths: list =
         return 0
 
 
+def _print_z3_unavailable():
+    """Tell the user how to give the Python running slop the Z3 solver."""
+    print("Error: slop verify needs the Z3 solver, which this slop's Python does not have.",
+          file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Install it into that Python (Homebrew, release archive or source install):",
+          file=sys.stderr)
+    print(f"  {shlex.quote(sys.executable)} -m pip install 'z3-solver>=4.12.0'", file=sys.stderr)
+    print("In a uv checkout of slop:", file=sys.stderr)
+    print("  uv sync --extra verify", file=sys.stderr)
+
+
 def cmd_verify(args):
     """Verify contracts and range safety with Z3"""
     try:
         from slop.verifier import verify_file, verify_ast, Z3_AVAILABLE
-    except ImportError:
-        print("Error: verifier module not found", file=sys.stderr)
+    except ImportError as e:
+        print(f"Error: cannot load the verifier: {e}", file=sys.stderr)
         return 1
 
     if not Z3_AVAILABLE:
-        print("Error: Z3 solver not available.", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Install with one of:", file=sys.stderr)
-        print("  uv sync --extra verify     # if using uv (recommended)", file=sys.stderr)
-        print("  uv pip install z3-solver   # alternative for uv", file=sys.stderr)
-        print("  pip install z3-solver      # if using pip", file=sys.stderr)
+        _print_z3_unavailable()
         return 1
 
     # Determine what to verify:

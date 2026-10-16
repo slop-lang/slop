@@ -38,7 +38,7 @@ body is an opaque value and in an invariant makes the invariant uncheckable.
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-import z3
+from .z3_setup import z3
 
 from slop.parser import SList, Symbol, Number, String, is_form, pretty_print
 from slop.types import (

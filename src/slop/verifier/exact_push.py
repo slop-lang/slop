@@ -26,7 +26,7 @@ a false contract verify.
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import z3
+from .z3_setup import z3
 
 from slop.parser import SList, Symbol, is_form
 

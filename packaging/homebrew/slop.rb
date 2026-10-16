@@ -60,6 +60,10 @@ class Slop < Formula
 
       `slop mcp` serves SLOP's reference, docs, checker and formatter to a
       coding agent over MCP. For Claude Code:  claude mcp add slop -- slop mcp
+
+      `slop verify` proves contracts with the Z3 solver, which is not
+      installed by default. To add it:
+        #{opt_libexec}/bin/python -m pip install 'z3-solver>=4.12.0'
     EOS
   end
 

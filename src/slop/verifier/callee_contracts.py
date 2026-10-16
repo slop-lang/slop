@@ -19,7 +19,7 @@ sequences by *name*, so a callee's `(forall (t $result) ...)` or
 from contextlib import contextmanager
 from typing import Any, Callable, Iterable, List, Optional, Sequence, Set, Tuple
 
-import z3
+from .z3_setup import z3
 
 from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import (
