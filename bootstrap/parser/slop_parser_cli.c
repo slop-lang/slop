@@ -55,7 +55,7 @@ int main(int argc, char** _c_argv) {
     (void)argc; (void)argv;
     if (argc >= 2) {
         if (string_eq(parser_cli_argv_to_string(argv, 1), SLOP_STR("--version"))) {
-            printf("%s\n", "slop-parser 0.5.1");
+            printf("%s\n", "slop-parser 0.5.2");
             return 0;
         }
     }
