@@ -26,6 +26,21 @@ Each function is verified independently. The verifier translates the function bo
 
 Given `@pre` as assumptions, the verifier proves `@post` holds for all valid inputs. The function body is translated to Z3 constraints with `$result` bound to the body's return value.
 
+For bodies translated to check a `@post` or `@property`, division and remainder
+also require a nonzero divisor wherever the operation runs. This is a proof
+obligation checked by the forward walk at that program point, using the
+preconditions, branch conditions, proved loop invariants and preceding state.
+A reachable zero divisor fails with a `body definedness` diagnostic and a
+counterexample. An operation whose state or path the walk cannot follow leaves
+verification `unknown`. Facts from a later expression or loop exit cannot
+justify an earlier operation. `@assume` remains trusted; an assumption about a
+stable parameter can establish that its divisor is nonzero.
+
+Semantic side facts, such as a literal's UTF-8 byte length or a callee's range
+bounds, remain facts. Facts first encountered by later verification phases are
+included with their path guards before solving. A body's definedness obligations
+are never added as assumptions to the postcondition or property solver.
+
 ```lisp
 (fn clamp ((x Int) (lo Int) (hi Int))
   (@spec ((Int Int Int) -> Int))
