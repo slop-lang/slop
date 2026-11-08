@@ -57,3 +57,14 @@ lib/compiler/checker/slop-checker
 
 .moosedev/
 !.moosedev/kg.nq
+
+# MOOSEDev: ignore the derived store/vector cache and local config,
+# but commit the canonical project-graph text (kg.nq).
+/.moosedev/*
+!/.moosedev/kg.nq
+/.env
+
+.claude/
+.codex/
+.agents/
+.mcp.json
