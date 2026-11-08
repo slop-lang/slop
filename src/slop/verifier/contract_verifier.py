@@ -33,7 +33,7 @@ from .loop_patterns import (
 )
 from .registry import FunctionRegistry, FunctionDef
 from .type_builder import _parse_type_expr_simple
-from .translator import Z3Translator, _str_hash
+from .translator import Z3Translator, _str_hash, _byte_length
 from .ssa import SSAContext, SSAVersion
 from .invariant_inference import InvariantInferencer, InferredInvariant
 
@@ -2917,7 +2917,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 translator.variables[str_len_func_name] = str_len_func
             else:
                 str_len_func = translator.variables[str_len_func_name]
-            add(str_len_func(field_func) == z3.IntVal(len(resolved.value)))
+            add(str_len_func(field_func) == z3.IntVal(_byte_length(resolved.value)))
 
         # Option/Result constructors: tag, and payload where there is one.
         if isinstance(resolved, SList) and len(resolved) >= 1:
@@ -3407,7 +3407,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                          "earlier, which the main model does not follow"),
                 counterexample=result.counterexample, location=result.location,
                 suggestions=result.suggestions)
-        if report is None or (not report.outcomes and not report.exits):
+        if report is None or (not report.outcomes and not report.exits and not report.definedness):
             return result
         unchecked = report.unchecked
         exits_unchecked = report.exits_unchecked
@@ -3582,19 +3582,22 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         f"or while body: {pretty_print(form)}" for form in misplaced),
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col))
             checks_exits = bool(walked_returns) and bool(postconditions or properties)
-            if sites or in_callbacks or checks_exits:
-                exits = None
+            definedness_sites = (self._body_definedness_sites(walked_body)
+                                 if postconditions or properties else [])
+            if sites or in_callbacks or checks_exits or definedness_sites:
+                exits = {'assumptions': list(assumptions), 'return_type': spec_return_type}
                 if checks_exits:
-                    exits = {
+                    exits.update({
                         'walked': walked_returns,
                         'returns': self._walked_return_nodes(walked_body, walked_returns),
                         'posts': list(postconditions),
                         'properties': list(properties),
                         'assumptions': list(assumptions),
                         'return_type': spec_return_type,
-                    }
+                    })
                 invariant_report = self._check_loop_invariants(
-                    params, preconditions, walked_body, sites, in_callbacks, exits)
+                    params, preconditions, walked_body, sites, in_callbacks, exits,
+                    definedness_sites)
                 self._invariant_report = invariant_report
                 failed = invariant_report.failed + invariant_report.exits_failed
                 if failed:
@@ -3750,7 +3753,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         pre_z3: List[z3.BoolRef] = []
         failed_pres: List[Tuple[Optional[str], SExpr]] = []
         for pre_name, pre_expr in preconditions:
-            z3_pre = translator.translate_expr(pre_expr)
+            with translator.constraint_scope('precondition'):
+                z3_pre = translator.translate_expr(pre_expr)
             if z3_pre is not None:
                 pre_z3.append(self._ensure_bool(z3_pre))
             else:
@@ -3778,7 +3782,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         body_z3: Optional[z3.ExprRef] = None
         # What each name meant before the body introduced any of its own.
         scope_before_body = dict(translator.variables)
-        body_constraint_start = len(translator.constraints)
         if fn_body is not None:
             # Which loops run whenever the body does. Without this every loop is
             # taken as conditional and contributes no facts. The last form is
@@ -3800,10 +3803,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None and (postconditions or properties):
             # Every form, not the last alone: `(set! k 5) k` returns 5, and
             # translating only `k` read the parameter's value.
-            with translator.recording_call_sites(self._builtin_binding_axioms(translator)) \
+            with translator.constraint_scope('body'), \
+                    translator.recording_call_sites(self._builtin_binding_axioms(translator)) \
                     as (call_sites, binding_facts):
                 body_z3 = translator.translate_expr(combined_body)
-        body_constraint_end = len(translator.constraints)
 
         # Postconditions are translated after the body, not before it: a @post
         # speaks about the state the function ends in, so a mutable parameter
@@ -3828,7 +3831,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         post_z3: List[z3.BoolRef] = []
         failed_posts: List[SExpr] = []
         for post in postconditions:
-            z3_post = translator.translate_expr(post)
+            with translator.constraint_scope('postcondition'):
+                z3_post = translator.translate_expr(post)
             if z3_post is not None:
                 post_z3.append(self._ensure_bool(z3_post))
             else:
@@ -3842,7 +3846,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # which control actually gets there; None means it always does, and a
         # `return` in a shape _early_exits cannot guard leaves early_exits None,
         # in which case nothing is claimed about the result at all.
-        with translator.initial_versions():
+        with translator.initial_versions(), translator.constraint_scope('body'):
             early_exits = (self._early_exits(combined_body, translator,
                                              self._param_names(params))
                            if combined_body is not None else [])
@@ -3875,7 +3879,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     invariant_scope.enter_context(
                         translator.binding_in_scope(binding, name, final=True))
                 with translator.without_quantifier_patterns():
-                    z3_assume = translator.translate_expr(assume)
+                    with translator.constraint_scope('assumption'):
+                        z3_assume = translator.translate_expr(assume)
             if z3_assume is not None:
                 assume_z3.append(self._ensure_bool(z3_assume))
                 assume_is_propagated.append(assume_index in propagated_range)
@@ -3931,7 +3936,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             else:
                 translator.variables[local] = outer
         try:
-            for prop_name, prop_expr in properties:
+            for prop_index, (prop_name, prop_expr) in enumerate(properties):
                 # Each property gets the namespace back as it found it. A
                 # property may bind names of its own - `(let (($result 1)) ...)`
                 # - or make the translator claim one for an accessor, and either
@@ -3941,7 +3946,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # from them; only the bindings are rolled back.
                 scope_before_property = dict(translator.variables)
                 try:
-                    z3_prop = translator.translate_expr(prop_expr)
+                    with translator.constraint_scope(f'property:{prop_index}'):
+                        z3_prop = translator.translate_expr(prop_expr)
                 finally:
                     # The bindings go, the declarations stay. Translating a
                     # property may claim a name for a function the phases below
@@ -4089,43 +4095,43 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # value to give, so from here it stops answering.
         translator.freeze_versions()
 
-        # The tail's own side conditions - a non-zero divisor, a string length -
-        # only hold because the tail ran. An early return bypasses it, so they
-        # travel under the same guard as everything else derived from it.
-        def guard_body_constraints(terms) -> List[z3.BoolRef]:
-            """`terms` with the tail's own side conditions put under its guard.
-
-            Index-based because that is the only record of which constraints the
-            body contributed; every solver built from translator.constraints has
-            to apply it, or it assumes a divisor is non-zero on a path that
-            never reached the division.
-            """
-            guarded = list(terms)
-            if reached_guard is None:
-                return guarded
-            for i in range(body_constraint_start,
-                           min(body_constraint_end, len(guarded))):
-                guarded[i] = z3.Implies(reached_guard, guarded[i])
-            return guarded
-
-        constraint_terms = guard_body_constraints(translator.constraints)
-        # Which of them are obligations rather than facts, positionally. The
-        # index into constraint_terms is not the index into
-        # translator.constraints for long - the phases below append to the
-        # latter - so the flags travel alongside rather than being looked up.
-        constraint_is_obligation = [
-            i in translator.definedness_constraints
-            and not (assume_constraint_start <= i < assume_constraint_end)
-            for i in range(len(constraint_terms))]
-
         # Check: can we satisfy preconditions but violate postconditions?
         # If (pre AND NOT post) is SAT, then contract can be violated
         solver = z3.Solver()
         solver.set("timeout", self.timeout_ms)
 
-        # Add type constraints
-        for c in constraint_terms:
-            solver.add(c)
+        constraint_terms: List[z3.BoolRef] = []
+        constraint_is_obligation: List[bool] = []
+        constraint_cursor = 0
+
+        def sync_constraints():
+            """Drain new side facts, preserving guards and diagnostic positions.
+
+            Body definedness is checked by the forward walk at the operation,
+            never assumed here. Property-local facts belong to their own
+            solver. True placeholders keep the diagnostic phase boundaries.
+            """
+            nonlocal constraint_cursor
+            records = translator.constraints.records
+            for record in records[constraint_cursor:]:
+                obligation = record.obligation and record.scope not in ('assumption', 'input-invariant')
+                term = record.guarded()
+                if record.scope.startswith('property:') or (
+                        record.obligation and record.scope in ('body', 'exit', 'phase')):
+                    term = None
+                if term is not None and record.scope == 'body' and record.past_exit:
+                    if early_exits is None:
+                        term = None
+                    elif reached_guard is not None:
+                        term = z3.Implies(reached_guard, term)
+                term = z3.BoolVal(True) if term is None else term
+                constraint_terms.append(term)
+                constraint_is_obligation.append(obligation)
+                solver.add(term)
+            constraint_cursor = len(records)
+
+        sync_constraints()
+        translator._constraint_scope = 'phase'
 
         # Add preconditions
         for p in pre_z3:
@@ -4155,7 +4161,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         param_invariants = self._collect_parameter_invariants(params)
         invariant_z3: List[z3.BoolRef] = []
         for param_name, inv_expr in param_invariants:
-            inv_z3 = translator.translate_expr(inv_expr)
+            with translator.constraint_scope('input-invariant'):
+                inv_z3 = translator.translate_expr(inv_expr)
             if inv_z3 is not None:
                 inv_bool = self._ensure_bool(inv_z3)
                 solver.add(inv_bool)
@@ -4168,14 +4175,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for axiom in range_field_axioms:
             solver.add(axiom)
 
+        # Later phases retranslate the trailing expression. Side facts they
+        # produce have the same reachability requirement as its value.
+        translator._constraint_guard = (z3.BoolVal(False) if early_exits is None
+                                        else reached_guard)
+
 
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
         body_equality: List[z3.BoolRef] = []
-        # Definedness obligations an early exit's value raised, guarded with that
-        # exit. They go to the solver like everything else, but a universal
-        # property must not read them as evidence.
-        guarded_definedness: List[z3.BoolRef] = []
         # early_exits is None when the body returns somewhere this cannot guard,
         # or when a guard turned out to name something later reassigned. Either
         # way the trailing form is not the only thing $result can be, so it is
@@ -4224,22 +4232,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # carried over. Under this exit's guard, though: they hold
                     # because this path ran, and `(when flag (return (/ n n)))`
                     # would otherwise assert n != 0 for the path that did not.
-                    before = len(translator.constraints)
-                    value_z3 = translator.translate_expr(value)
-                    for offset, constraint in enumerate(translator.constraints[before:]):
-                        guarded_constraint = z3.Implies(guard, constraint)
-                        if before + offset in translator.definedness_constraints:
-                            # Still asserted, because the postcondition solver
-                            # has always had it (#133) - but noted, so it is not
-                            # copied into the property solver as evidence.
-                            guarded_definedness.append(guarded_constraint)
-                        solver.add(guarded_constraint)
-                        # constraint_terms is what the inconsistency diagnosis
-                        # replays; a condition only the solver knows about would
-                        # come out as a verifier defect.
-                        constraint_terms.append(guarded_constraint)
-                        constraint_is_obligation.append(
-                            before + offset in translator.definedness_constraints)
+                    with translator.constraint_scope('exit', guard):
+                        value_z3 = translator.translate_expr(value)
+                    sync_constraints()
                     if value_z3 is None or value_z3.sort() != result_var.sort():
                         continue
                     exit_equality = z3.Implies(guard, result_var == value_z3)
@@ -4407,7 +4402,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # yields is $result on some path, and nothing here can say
                     # which.
                     continue
-                for axiom in union_axioms_for(return_expr):
+                with translator.constraint_scope('exit', exit_guard):
+                    exit_axioms = union_axioms_for(return_expr)
+                for axiom in exit_axioms:
                     solver.add(z3.Implies(exit_guard, axiom))
 
             # A trailing match's arms are alternatives: what they establish holds
@@ -4786,9 +4783,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # The body phases are done; what follows is about the postconditions
         # themselves.
-        obligations = {str(axiom) for axiom in guarded_definedness}
-        body_axioms = [axiom for axiom in list(solver.assertions())[pre_mark:]
-                       if str(axiom) not in obligations]
+        sync_constraints()
+        body_axioms = list(solver.assertions())[pre_mark:]
 
         # Under Seq encoding the returned local and $result get separate Seq
         # constants, so a fact about one is invisible to the other. The property
@@ -4799,6 +4795,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for equality in self._result_sequence_equality(
                     fn_body, translator, contents_rewritten):
                 solver.add(equality)
+        sync_constraints()
 
         # First try all postconditions together (fast path)
         solver.push()
@@ -4829,6 +4826,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 for i, ((prop_name, prop_expr), prop_z3_expr) in enumerate(zip(properties, prop_z3)):
                     prop_solver = z3.Solver()
                     prop_solver.set("timeout", self.timeout_ms)
+                    property_scope = f'property:{i}'
+                    property_start = len(translator.constraints)
 
                     # The same constraint set the postcondition solver got -
                     # type constraints with the tail's side conditions under the
@@ -4851,6 +4850,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if constraint_is_obligation[j]:
                             continue
                         prop_solver.add(c)
+                    for record in translator.constraints.records:
+                        if record.scope == property_scope and not record.obligation:
+                            fact = record.guarded()
+                            if fact is not None:
+                                prop_solver.add(fact)
 
                     # Add assumptions (including loop invariants) as trusted
                     # axioms - but not a property propagated into one. That copy
@@ -4899,14 +4903,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                     # Add axioms for imported equality functions
                     # This allows Z3 to understand that e.g., term-eq(a,b) == (a == b)
-                    imported_eq_axioms = self._extract_imported_equality_axioms(translator)
+                    with translator.constraint_scope(property_scope):
+                        imported_eq_axioms = self._extract_imported_equality_axioms(translator)
                     for axiom in imported_eq_axioms:
                         prop_solver.add(axiom)
 
                     # Add universal axioms from imported function postconditions
                     # This enables verifying relational properties that involve multiple
                     # calls to the same function (e.g., filtered vs unfiltered results)
-                    imported_postcond_axioms = self._extract_imported_postcondition_axioms(translator)
+                    with translator.constraint_scope(property_scope):
+                        imported_postcond_axioms = self._extract_imported_postcondition_axioms(translator)
                     for axiom in imported_postcond_axioms:
                         prop_solver.add(axiom)
 
@@ -4919,6 +4925,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # call that returned earlier.
                     for equality in body_equality:
                         prop_solver.add(equality)
+
+                    # These generators can translate more terms too (#346).
+                    for record in translator.constraints.records[property_start:]:
+                        if not record.obligation and record.scope == property_scope:
+                            fact = record.guarded()
+                            if fact is not None:
+                                prop_solver.add(fact)
 
                     prop_str = pretty_print(prop_expr)
 

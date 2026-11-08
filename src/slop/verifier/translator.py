@@ -20,6 +20,7 @@ from slop.types import (
 
 from .z3_setup import Z3_AVAILABLE, z3
 from .types import MinimalTypeEnv, ImportedDefinitions
+from .constraints import TranslationConstraints
 
 if TYPE_CHECKING:
     from slop.parser import SExpr
@@ -85,7 +86,9 @@ class Z3Translator:
         self.function_registry = function_registry
         self.imported_defs = imported_defs or ImportedDefinitions()
         self.variables: Dict[str, z3.ExprRef] = {}
-        self.constraints: List[z3.BoolRef] = []
+        self._constraint_scope = 'declaration'
+        self._constraint_guard = None
+        self.constraints = TranslationConstraints(self._constraint_context)
         self.enum_values: Dict[str, int] = {}  # 'Fizz' -> 0, etc.
         # Array encoding for lists: maps list variable name to (array, length) pair
         self.use_array_encoding = use_array_encoding
@@ -176,7 +179,7 @@ class Z3Translator:
         # establish, not something a contract may assume. They sit in the same
         # list as the semantic facts - a string's length, a constructor's tag -
         # so anything wanting to tell the two apart reads this (#133).
-        self.definedness_constraints: set = set()
+        self.definedness_constraints = self.constraints.obligations
         self._final_version_names: set = set()
         self._declared_types: Dict[str, Any] = {}
         self._record_new_counter = 0  # Counter for unique record-new values
@@ -1961,7 +1964,7 @@ class Z3Translator:
             else:
                 # Each divisor must be non-zero for the expression to be defined
                 if isinstance(right, z3.ArithRef):
-                    self.add_definedness_constraint(right != 0)
+                    self.add_definedness_constraint(right != 0, expr)
                 result = result / right if op == '/' else result % right
         return result
 
@@ -2838,15 +2841,33 @@ class Z3Translator:
         """
         return self._pre_loop_variables.get(name, self.variables.get(name))
 
-    def add_definedness_constraint(self, constraint) -> None:
+    def _constraint_context(self):
+        guard = self._current_path()
+        if self._constraint_guard is not None:
+            guard = (z3.And(self._constraint_guard, guard)
+                     if guard is not None else None)
+        if self._quantifier_depth or self._closure_depth or self._in_loop_body:
+            guard = None
+        return guard, self._constraint_scope, self._past_exit
+
+    @contextmanager
+    def constraint_scope(self, scope, guard=None):
+        """The origin and enclosing path of side facts a translation produces."""
+        saved = self._constraint_scope, self._constraint_guard
+        self._constraint_scope, self._constraint_guard = scope, guard
+        try:
+            yield
+        finally:
+            self._constraint_scope, self._constraint_guard = saved
+
+    def add_definedness_constraint(self, constraint, source=None) -> None:
         """Record a constraint the code must establish, not one it may assume.
 
         Kept apart from the semantic facts so a universal @property can be given
         what the body *establishes* without also being handed what it is
         obliged to prove.
         """
-        self.definedness_constraints.add(len(self.constraints))
-        self.constraints.append(constraint)
+        self.constraints.add(constraint, obligation=True, source=source)
 
     def union_new_tag(self, expr: SExpr) -> Optional[str]:
         """The variant a `(union-new T tag ...)` builds, if its index is known.
@@ -3503,9 +3524,6 @@ class Z3Translator:
         None means the branch's condition cannot be stated, and nothing under
         it is recorded.
         """
-        if self._call_sites is None:
-            yield
-            return
         self._path_conditions.append(_NO_PATH if condition is None else condition)
         try:
             yield

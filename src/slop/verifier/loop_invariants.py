@@ -125,10 +125,14 @@ class InvariantOutcome:
             return 'postcondition'
         if self.kind == 'property':
             return f"property '{self.name}'" if self.name else 'property'
+        if self.kind == 'definedness':
+            return 'body definedness'
         return 'loop invariant'
 
     @property
     def where(self) -> str:
+        if self.kind == 'definedness':
+            return f" on line {getattr(self.site, 'line', '?')}"
         return f" at the return on line {getattr(self.site, 'line', '?')}" if self.site is not None else ''
 
 
@@ -138,6 +142,7 @@ class InvariantReport:
     misplaced: List[Any] = field(default_factory=list)
     # Postconditions and properties at the returns the walk checks.
     exits: List[InvariantOutcome] = field(default_factory=list)
+    definedness: List[InvariantOutcome] = field(default_factory=list)
 
     @property
     def exits_failed(self) -> List[InvariantOutcome]:
@@ -149,11 +154,11 @@ class InvariantReport:
 
     @property
     def failed(self) -> List[InvariantOutcome]:
-        return [o for o in self.outcomes if o.status == 'failed']
+        return [o for o in self.outcomes + self.definedness if o.status == 'failed']
 
     @property
     def unchecked(self) -> List[InvariantOutcome]:
-        return [o for o in self.outcomes if o.status in ('unknown', 'timeout')]
+        return [o for o in self.outcomes + self.definedness if o.status in ('unknown', 'timeout')]
 
     @property
     def assumable(self) -> List[InvariantOutcome]:
@@ -183,7 +188,7 @@ class InvariantProverMixin:
     # ------------------------------------------------------------------
 
     def _check_loop_invariants(self, params, preconditions, body, sites,
-                               in_callbacks, exits=None) -> InvariantReport:
+                               in_callbacks, exits=None, definedness_sites=()) -> InvariantReport:
         """Check the invariants at `sites`, and the contract at each walked return.
 
         `exits`, if given, is a dict: `walked` (ids of the returns the main
@@ -193,6 +198,10 @@ class InvariantProverMixin:
         leaves the function, with $result bound to the value it returns.
         """
         report = InvariantReport()
+        self._ip_definedness = {
+            id(expr): InvariantOutcome(expr, None, kind='definedness', site=expr)
+            for expr in definedness_sites}
+        report.definedness = list(self._ip_definedness.values())
         exits = exits or {}
         self._ip_outcomes: Dict[int, InvariantOutcome] = {}
         self._ip_sites: Dict[int, List[Any]] = {}
@@ -224,7 +233,7 @@ class InvariantProverMixin:
                 form[1] if len(form) >= 2 else form, None, 'unknown',
                 self._ip_unchecked_message(form[1] if len(form) >= 2 else form,
                                            "inside a callback the verifier does not follow")))
-        if not self._ip_outcomes and not report.exits:
+        if not self._ip_outcomes and not report.exits and not report.definedness:
             return report
 
         tr = Z3Translator(self.type_env, self.filename, self.function_registry,
@@ -268,17 +277,48 @@ class InvariantProverMixin:
             self._ip_tracked = self._ip_tracked_lists(body, set(env))
             given = []
             for _, pre in preconditions:
+                start = len(tr.constraints)
                 term = tr.translate_expr(pre)
                 if term is None or not z3.is_bool(term):
                     self._ip_give_up(f"the precondition {pretty_print(pre)} does not translate")
                     return self._ip_finish(report, body)
-                given.append(z3.Implies(self._ip_pre, term))
+                defined = [r.guarded() for r in tr.constraints.records[start:] if r.obligation]
+                if any(c is None for c in defined):
+                    self._ip_give_up('the precondition has unmodelled definedness')
+                    return self._ip_finish(report, body)
+                given.append(z3.Implies(self._ip_pre, z3.And(term, *defined)))
             for _, inv in self._collect_parameter_invariants(params):
+                start = len(tr.constraints)
                 term = tr.translate_expr(inv)
                 if term is not None and z3.is_bool(term):
+                    defined = [r.guarded() for r in tr.constraints.records[start:] if r.obligation]
+                    if any(c is None for c in defined):
+                        self._ip_give_up('the parameter invariant has unmodelled definedness')
+                        return self._ip_finish(report, body)
+                    given.append(z3.And(term, *defined))
+            # Stable assumptions are trusted at body program points too. An
+            # assumption about a local or an assigned parameter describes a
+            # different state, so it cannot justify a division here.
+            self._ip_definedness_assume_note = None
+            for assume in self._ip_assumptions:
+                roots = self._ip_free_roots(assume)
+                if not roots <= set(env) or roots & self._ip_changed:
+                    self._ip_definedness_assume_note = 'an @assume cannot be stated at this program point'
+                    continue
+                start = len(tr.constraints)
+                term = tr.translate_expr(assume)
+                if term is not None and z3.is_bool(term):
                     given.append(term)
-            self._ip_context = ([c for i, c in enumerate(tr.constraints)
-                                 if i not in tr.definedness_constraints]
+                    for record in tr.constraints.records[start:]:
+                        fact = record.guarded()
+                        if fact is not None:
+                            given.append(fact)
+                        else:
+                            self._ip_definedness_assume_note = 'an @assume has unmodelled side conditions'
+                else:
+                    self._ip_definedness_assume_note = 'an @assume does not translate'
+            self._ip_context = ([r.guarded() for r in tr.constraints.records
+                                 if not r.obligation and r.guarded() is not None]
                                 + given + self._ip_parameter_field_ranges(tr, env, types))
             state = _IState(env, types, {}, z3.BoolVal(True), None)
             try:
@@ -300,12 +340,13 @@ class InvariantProverMixin:
                 outcome.status = 'unknown'
                 outcome.message = self._ip_unchecked_message(
                     outcome.expr, "the loop is not reached by the analysis")
-        for outcome in report.exits:
+        for outcome in report.exits + report.definedness:
             # Checked every time the walk got there, and held each time.
             if outcome.status == 'pending' and outcome.visited:
                 outcome.status = 'proved'
             elif outcome.status == 'pending':
-                self._ip_set_unknown(outcome, "the return is not reached by the analysis")
+                place = 'operation' if outcome.kind == 'definedness' else 'return'
+                self._ip_set_unknown(outcome, f"the {place} is not reached by the analysis")
         for outcome in report.outcomes:
             if outcome.status == 'proved' and outcome.loop is not None:
                 outcome.assumable = self._ip_assumable(outcome, body)
@@ -319,7 +360,61 @@ class InvariantProverMixin:
 
     def _ip_every_outcome(self) -> List[InvariantOutcome]:
         return (list(self._ip_outcomes.values())
-                + [o for outcomes in self._ip_exit_outcomes.values() for o in outcomes])
+                + [o for outcomes in self._ip_exit_outcomes.values() for o in outcomes]
+                + list(self._ip_definedness.values()))
+
+    @classmethod
+    def _body_definedness_sites(cls, body, functions=None):
+        """Operations actually in the body; quoted data and function values do not run."""
+        found = {}
+
+        def function_sites(fn, captured):
+            return [site for item in fn.items[2:]
+                    for site in cls._body_definedness_sites(item, captured)]
+
+        def walk(node, functions):
+            if not isinstance(node, SList) or not node.items:
+                return
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head in ('quote', 'fn') or (head is not None and _is_annotation(head)):
+                return
+            if head in ('let', 'let*') and len(node) >= 2 and isinstance(node[1], SList):
+                local = dict(functions)
+                for binding in node[1].items:
+                    if not isinstance(binding, SList) or len(binding) < 2:
+                        continue
+                    name, init = Z3Translator._bound_name(binding), binding[-1]
+                    if is_form(init, 'fn'):
+                        local[name] = function_sites(init, local)
+                    elif isinstance(init, Symbol) and init.name in local:
+                        local[name] = local[init.name]
+                    else:
+                        walk(init, local)
+                        local.pop(name, None)
+                for item in node.items[2:]:
+                    walk(item, local)
+                return
+            if head in ('/', '%'):
+                found[id(node)] = node
+            for site in functions.get(head, []):
+                found[id(site)] = site
+            # Passing a callback may execute it; creating or returning one alone
+            # does not. The walk will conservatively leave such sites unknown.
+            for item in node.items[1:]:
+                if head == 'return':
+                    walk(item, functions)
+                    continue
+                if isinstance(item, Symbol):
+                    for site in functions.get(item.name, []):
+                        found[id(site)] = site
+                elif is_form(item, 'fn'):
+                    for site in function_sites(item, functions):
+                        found[id(site)] = site
+                else:
+                    walk(item, functions)
+
+        walk(body, functions or {})
+        return list(found.values())
 
     @staticmethod
     def _ip_unchecked_message(expr, reason: str) -> str:
@@ -1063,6 +1158,7 @@ class InvariantProverMixin:
 
     def _ip_translate(self, expr, st: _IState, pc, instantiate=True, pin=True, invariant=False):
         tr = self._xp_tr
+        prefix_axioms = list(self._xp_axioms)
         saved_vars = {}
         saved_seqs = {}
         for name, value in st.env.items():
@@ -1106,11 +1202,16 @@ class InvariantProverMixin:
                         self._xp_callee_posts(call, head, pc,
                                               keep_post=self._ip_post_is_one_state(head))
         finally:
+            emitted = list(tr.constraints.records[start:])
             for index in range(start, len(tr.constraints)):
                 if index in tr.definedness_constraints:
-                    self._ip_obligations.append(tr.constraints[index])
+                    condition = tr.constraints.records[index].guarded()
+                    self._ip_obligations.append(
+                        z3.BoolVal(False) if condition is None else condition)
                 else:
-                    self._xp_axioms.append(z3.Implies(pc, tr.constraints[index]))
+                    fact = tr.constraints.records[index].guarded()
+                    if fact is not None:
+                        self._xp_axioms.append(z3.Implies(pc, fact))
             del tr.constraints[start:]
             tr.definedness_constraints.difference_update(
                 {i for i in tr.definedness_constraints if i >= start})
@@ -1125,7 +1226,50 @@ class InvariantProverMixin:
                     tr.list_seqs.pop(name, None)
                 else:
                     tr.list_seqs[name] = previous
+        if not invariant:
+            self._ip_check_body_definedness(expr, emitted, st, pc, prefix_axioms)
         return term
+
+    def _ip_check_body_definedness(self, expr, emitted, st, pc, prefix_axioms):
+        """Prove at the operation, using facts established before this expression.
+
+        Later result/range/loop facts can rule out precisely the unsafe input,
+        so the completed expression's facts must not justify its own safety.
+        """
+        reads = self._ip_state_reads(expr, st)
+        stale = st.dirty or self._ip_first_effect([expr])
+        for record in emitted:
+            outcome = self._ip_definedness.get(id(record.source))
+            if not record.obligation or outcome is None:
+                continue
+            outcome.visited = True
+            if record.guard is None or (reads and stale):
+                self._ip_set_unknown(outcome, 'the operation has no modelled state or path')
+                continue
+            path = z3.And(pc, st.alive, record.guard)
+            claim = z3.Implies(path, record.term)
+            self._ip_decide(outcome, claim, st, '', path, goal=record.term,
+                            axioms=prefix_axioms)
+            known = set()
+            for term in (list(st.env.values()) + list(st.seqs.values())
+                         + list(self._ip_context) + prefix_axioms + list(self._ip_local)):
+                known.update(self._ip_constants(term))
+            stack = [record.term]
+            opaque_call = False
+            while stack:
+                term = stack.pop()
+                if z3.is_app(term) and term.num_args() and term.decl().name().startswith('fn_'):
+                    opaque_call = True
+                stack.extend(term.children())
+            if outcome.status == 'failed' and (self._ip_constants(record.term) - known or opaque_call):
+                outcome.status = 'unknown'
+                outcome.message = self._ip_unchecked_text(
+                    outcome, 'the divisor depends on a value created inside this expression')
+                outcome.counterexample = None
+            if outcome.status == 'failed' and self._ip_definedness_assume_note:
+                outcome.status = 'unknown'
+                outcome.message = self._ip_unchecked_text(outcome, self._ip_definedness_assume_note)
+                outcome.counterexample = None
 
     def _ip_expand_quantifiers(self, expr, st: _IState, bound: Dict[str, Any]) -> None:
         """Translate quantifiers over tracked lists by the list's structure.
@@ -2192,6 +2336,11 @@ class InvariantProverMixin:
         outcomes = [self._ip_outcomes[id(c)] for c in conditions]
         self._ip_loop_depth[id(loop)] = self._ip_depth
         body_items = [i for i in loop.items[2:] if not is_form(i, '@loop-invariant')]
+        if self._ip_own_break(body_items):
+            for site in self._body_definedness_sites(loop):
+                outcome = self._ip_definedness.get(id(site))
+                if outcome is not None:
+                    self._ip_set_unknown(outcome, 'break or continue in the loop body')
         names, pushed, cinline = self._ip_loop_writes(loop)
         names = set(st.env) if cinline else {n for n in names if n in st.env}
         if cinline:
@@ -2643,6 +2792,9 @@ class InvariantProverMixin:
                 self._ip_set_unknown(self._ip_outcomes[id(condition)], reason)
             for outcome in self._ip_exit_outcomes.get(id(node), []):
                 self._ip_set_unknown(outcome, reason)
+            outcome = self._ip_definedness.get(id(node))
+            if outcome is not None:
+                self._ip_set_unknown(outcome, reason)
             for item in node.items:
                 walk(item)
         walk(loop)
@@ -2658,7 +2810,7 @@ class InvariantProverMixin:
     # ------------------------------------------------------------------
 
     def _ip_decide(self, outcome: InvariantOutcome, claim, st: _IState, failure: str, path,
-                   goal=None) -> None:
+                   goal=None, axioms=None) -> None:
         """Check `claim` under everything the walk has established; record a failure.
 
         `path` is the claim's path condition. A proof is only a proof if the
@@ -2673,7 +2825,7 @@ class InvariantProverMixin:
             return
         solver = z3.Solver()
         solver.set("timeout", self.timeout_ms)
-        facts = list(self._ip_context) + list(self._xp_axioms)
+        facts = list(self._ip_context) + list(self._xp_axioms if axioms is None else axioms)
         if outcome.kind != 'property':
             facts.append(self._ip_pre)
         for fact in facts:
