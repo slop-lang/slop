@@ -1694,6 +1694,20 @@ class Z3Translator:
                         self._assert_constructed(result, op, inner)
                     return result
 
+                # (is-none x), (is-some x), (is-ok x), (is-error x) are the tag
+                # test (== x (none)) already makes. Left as uninterpreted calls,
+                # (is-none (none)) could be false, so no contract stated with
+                # them - (== (is-none $result) (pred ...)) on an Option-returning
+                # check - could ever be proven.
+                if op in ('is-none', 'is-some', 'is-ok', 'is-error') and len(expr) == 2:
+                    inner = self.translate_expr(expr[1])
+                    if inner is not None and z3.is_int(inner):
+                        if "union_tag" not in self.variables:
+                            self.variables["union_tag"] = z3.Function(
+                                "union_tag", z3.IntSort(), z3.IntSort())
+                        return self.variables["union_tag"](inner) == z3.IntVal(
+                            self.constructor_tag(op[len('is-'):]))
+
                 if op == 'none' and len(expr) == 1:
                     result = self._translate_function_call(expr)
                     if result is not None:

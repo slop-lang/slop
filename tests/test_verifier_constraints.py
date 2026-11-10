@@ -180,3 +180,47 @@ def test_late_tail_fact_does_not_constrain_an_early_result():
         (when flag (return old))
         (record-new R (text "é"))))''')
     assert result.status != 'verified'
+
+
+# (is-none x) and friends are the tag test (== x (none)) makes, not opaque
+# calls: an opaque is-none could be false of (none), so no contract stated
+# with them could be proven.
+@pytest.mark.parametrize('post', [
+    '(== (is-none $result) (>= n 0))',
+    '(== (is-some $result) (< n 0))',
+    '(== (is-none $result) (not (is-some $result)))',
+])
+def test_option_predicates_are_tag_tests(post):
+    assert verify(f'''(fn f ((n Int))
+      (@spec ((Int) -> (Option Int))) (@post {post})
+      (if (>= n 0) (none) (some n)))''').status == 'verified'
+
+
+@pytest.mark.parametrize('post', [
+    '(== (is-none $result) (> n 0))',
+    '(== (is-some $result) (>= n 0))',
+    '(is-none $result)',
+])
+def test_false_option_predicate_contracts_still_fail(post):
+    assert verify(f'''(fn f ((n Int))
+      (@spec ((Int) -> (Option Int))) (@post {post})
+      (if (>= n 0) (none) (some n)))''').status == 'failed'
+
+
+@pytest.mark.parametrize('post, status', [
+    ('(== (is-ok $result) (!= n 0))', 'verified'),
+    ('(== (is-error $result) (== n 0))', 'verified'),
+    ('(is-ok $result)', 'failed'),
+])
+def test_result_predicates_are_tag_tests(post, status):
+    assert verify(f'''(fn f ((n Int))
+      (@spec ((Int) -> (Result Int String))) (@post {post})
+      (if (== n 0) (error "zero") (ok n)))''').status == status
+
+
+def test_option_predicate_on_an_opaque_value_proves_nothing():
+    # Nothing is known of g's result, so neither outcome may be claimed.
+    assert verify('''(module m
+      (fn g ((n Int)) (@spec ((Int) -> (Option Int))) (some n))
+      (fn f ((n Int)) (@spec ((Int) -> (Option Int))) (@post (is-some $result))
+        (g n)))''').status == 'failed'
